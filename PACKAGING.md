@@ -1,0 +1,284 @@
+# 打包与启动指南
+
+本文档说明如何将 A2X Registry 打包为可执行二进制、配置环境变量并启动测试。
+覆盖三种场景：
+
+1. **PyInstaller 单文件二进制**（一体机部署推荐，单进程、零依赖运行时）
+2. **pipx / pip 安装控制台脚本**（开发或带 Python 环境的机器）
+3. **启动后用 curl 跑冒烟测试**（复用 [api_curl_tests.md](./api_curl_tests.md) 的命令）
+
+---
+
+## 1. 前置条件
+
+| 项 | 要求 |
+|---|---|
+| 操作系统 | Linux x86_64（一体机目标平台） |
+| Python | 3.10+（建议 3.11） |
+| 内存 | ≥ 512 MB（lite 安装即可，vector/chroma 非必须） |
+| 磁盘 | ≥ 100 MB（二进制 + SQLite 数据目录） |
+| 端口 | 8000（默认，可通过环境变量改） |
+
+打包机与运行机可以是同一台，也可以不同（PyInstaller 二进制可跨机拷贝）。
+
+---
+
+## 2. 环境变量总览
+
+所有运行时配置经环境变量传入，**不接受命令行 host/port**（除 `--port` 作为开发兜底）。
+推荐在启动脚本里 `source registry.env`，避免 systemd ExecLine 频繁改动。
+
+### 2.1 必须关注的变量
+
+| 变量 | 默认 | 取值 | 说明 |
+|---|---|---|---|
+| `A2X_REGISTRY_HOME` | `~/.a2x_registry/` | 绝对路径 | 数据根目录。SQLite db 落在 `<home>/database/registry.db` |
+| `A2X_REGISTRY_MODE` | `""`（generic） | `""` / `appliance` | `appliance` 才建镜像/实例注册表并装配 ImageService |
+| `A2X_REGISTRY_DB_KIND` | `sqlite` | `sqlite` / `memory` / `rqlite` | 存储后端 |
+| `A2X_REGISTRY_BIND` | `127.0.0.1` | 具体 IP | **禁止 `0.0.0.0`**（启动会 `ValueError`） |
+| `A2X_REGISTRY_PORT` | `8000` | 1-65535 | 监听端口 |
+
+### 2.2 appliance 模式相关
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `A2X_REGISTRY_REPO_BASE` | 空 | 镜像仓根路径；空时 deregister 仅日志、不阻塞 |
+
+### 2.3 rqlite 模式（后续版本，730 单机不启用）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `A2X_REGISTRY_DB_ENDPOINT` | `http://127.0.0.1:4001` | rqlite HTTP API |
+| `A2X_REGISTRY_DB_AUTH` | 空 | `user:pwd` 形式 |
+| `A2X_REGISTRY_HA_MEMBERS` | 空 | 730 单机必须为空，非空触发启动报错 |
+
+> **校验逻辑真源**：[a2x_registry/backend/__main__.py](./a2x_registry/backend/__main__.py) 的 `parse_runtime_config`，
+> [a2x_registry/backend/startup.py](./a2x_registry/backend/startup.py) 的 `_resolve_db_config`。
+
+---
+
+## 3. 场景一：PyInstaller 打包为单文件二进制
+
+### 3.1 安装打包依赖
+
+```bash
+cd /home/dyc/code/A2X-registry
+source .venv/bin/activate
+pip install pyinstaller
+```
+
+### 3.2 执行打包
+
+入口由 [pyproject.toml](./pyproject.toml) 的 `[project.scripts]` 定义为
+`a2x-registry = "a2x_registry.backend.__main__:main"`，对应模块
+[a2x_registry/backend/__main__.py](./a2x_registry/backend/__main__.py)。
+
+```bash
+pyinstaller \
+  --onefile \
+  --name a2x-registry \
+  --collect-submodules a2x_registry \
+  --hidden-import uvicorn.logging \
+  --hidden-import uvicorn.protocols.http.auto \
+  --hidden-import uvicorn.protocols.websockets.auto \
+  --hidden-import uvicorn.lifespan.on \
+  a2x_registry/backend/__main__.py
+```
+
+说明：
+- `--onefile`：单文件二进制，解压到 `/tmp/_MEI*` 运行
+- `--collect-submodules a2x_registry`：动态导入的子模块（auth/cluster/image 等）全部打入
+- `--hidden-import uvicorn.*`：uvicorn 的协议/日志插件是动态加载的，PyInstaller 静态分析发现不了
+
+产物：`dist/a2x-registry`（约 30-50 MB）。`build/` 和 `*.spec` 可删。
+
+### 3.3 部署到目标机
+
+```bash
+# 拷贝到目标机
+scp dist/a2x-registry user@appliance:/usr/local/bin/a2x-registry
+ssh user@appliance "chmod +x /usr/local/bin/a2x-registry"
+```
+
+> 二进制内嵌了 Python 解释器，**目标机不需要装 Python**。
+
+### 3.4 配置环境变量
+
+在目标机创建 `/etc/a2x-registry/registry.env`：
+
+```bash
+# /etc/a2x-registry/registry.env
+export A2X_REGISTRY_HOME=/var/lib/a2x-registry
+export A2X_REGISTRY_MODE=appliance
+export A2X_REGISTRY_DB_KIND=sqlite
+export A2X_REGISTRY_BIND=127.0.0.1
+export A2X_REGISTRY_PORT=8000
+```
+
+创建数据目录：
+
+```bash
+sudo mkdir -p /var/lib/a2x-registry/database
+sudo chown -R $USER:$USER /var/lib/a2x-registry
+```
+
+### 3.5 启动
+
+```bash
+source /etc/a2x-registry/registry.env
+/usr/local/bin/a2x-registry
+```
+
+预期输出：
+
+```
+  A2X Registry
+  http://127.0.0.1:8000
+  Docs: http://127.0.0.1:8000/docs
+
+INFO:     Started server process [xxxx]
+INFO:     Warmup [2%] 初始化 SQL 后端...
+INFO:       SQL backend ready (kind=sqlite, mode=appliance)
+INFO:       ImageService assembled (appliance mode)
+...
+INFO:     Warmup [100%] complete — total 0.0s
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
+
+看到 `ImageService assembled (appliance mode)` 即镜像管理 API 已就绪。
+
+---
+
+## 4. 场景二：pip 安装控制台脚本
+
+适合开发机或已预装 Python 的运行环境。
+
+```bash
+cd /home/dyc/code/A2X-registry
+source .venv/bin/activate
+pip install .          # lite 安装（不含 vector/chroma）
+# 或
+pip install .[full]    # 含向量检索（一体机一般不需要）
+
+# 验证入口已注册
+which a2x-registry
+a2x-registry --help
+```
+
+环境变量与启动方式同 §3.4 / §3.5，只是把 `/usr/local/bin/a2x-registry` 换成 `a2x-registry`。
+
+---
+
+## 5. 启动后冒烟测试
+
+启动后开第二个终端，按 [api_curl_tests.md](./api_curl_tests.md) §1 跑镜像管理用例。
+
+### 5.1 健康检查
+
+```bash
+curl -s http://127.0.0.1:8000/api/warmup-status | python -m json.tool
+```
+
+预期 `ready: true`。
+
+### 5.2 镜像注册 → 查询 → 运行规格 → 注销（端到端）
+
+```bash
+# 设置 DB 路径（供 sqlite3 验证用）
+export A2X_REGISTRY_DB="${A2X_REGISTRY_HOME}/database/registry.db"
+
+# 1. 注册镜像
+curl -s -X POST http://127.0.0.1:8000/api/images \
+  -H "Content-Type: application/json" \
+  -d '{
+    "framework": "opencode",
+    "framework_version": "v0.2.0",
+    "spec": {
+      "rootfs": {"type": "image", "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3", "workdir": "/app"},
+      "cpu": 1000, "memory": 2048,
+      "ports": [{"port": 8080, "protocol": "tcp"}],
+      "env": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
+      "image_module_version": "v1.3"
+    },
+    "uploaded_by": "user-01"
+  }' | python -m json.tool
+# 预期：{"framework": "opencode", "framework_version": "v0.2.0", "is_default": true, "status": "registered"}
+
+# 2. 查询镜像
+curl -s 'http://127.0.0.1:8000/api/images?framework=opencode' | python -m json.tool
+# 预期：返回 framework 分组，default="v0.2.0"
+
+# 3. 取运行规格
+curl -s http://127.0.0.1:8000/api/images/opencode/launch-spec | python -m json.tool
+# 预期：返回 rootfs/cpu/memory/ports/env，不含 image_module_version
+
+# 4. 落库验证
+sqlite3 "$A2X_REGISTRY_DB" \
+  "SELECT framework, framework_version, is_default FROM image
+   WHERE registry='镜像注册表' AND framework='opencode';"
+# 预期：opencode|v0.2.0|1
+
+# 5. 注销镜像
+curl -s -X DELETE http://127.0.0.1:8000/api/images/opencode/v0.2.0 | python -m json.tool
+# 预期：{"framework": "opencode", "framework_version": "v0.2.0", "status": "deregistered", "repo_deleted": false}
+```
+
+更多用例（设默认版本、409 在用实例、联调场景 A/B/C）见
+[api_curl_tests.md](./api_curl_tests.md)。
+
+---
+
+## 6. 常见问题
+
+### 6.1 `A2X_REGISTRY_BIND=0.0.0.0 is forbidden`
+
+730 单机模式禁止绑定通配地址。改为具体 IP 或 `127.0.0.1`。
+
+### 6.2 `SQLite objects created in a thread can only be used in that same thread`
+
+[common/db.py](./a2x_registry/common/db.py) 的 `connect()` 已对 sqlite/memory 后端设置
+`check_same_thread=False`。若仍报错，说明运行的是旧版二进制，重新打包。
+
+### 6.3 `ImageService assembled` 未出现在日志
+
+`A2X_REGISTRY_MODE` 没设为 `appliance`。generic 模式下镜像/实例路由返回 404
+（设计如此，非 appliance 不建镜像表）。
+
+### 6.4 PyInstaller 二进制启动后 `ModuleNotFoundError: No module named 'uvicorn.protocols...'`
+
+打包时漏了 `--hidden-import`。补上 §3.2 列出的 4 个 uvicorn 隐藏导入重打包。
+
+### 6.5 端口被占用
+
+改 `A2X_REGISTRY_PORT`，或临时用 `--port` 覆盖（env 优先级更高）。
+
+---
+
+## 7. 附录：systemd 服务单元（生产部署）
+
+`/etc/systemd/system/a2x-registry.service`：
+
+```ini
+[Unit]
+Description=A2X Registry Backend
+After=network.target
+
+[Service]
+Type=simple
+User=a2x
+EnvironmentFile=/etc/a2x-registry/registry.env
+ExecStart=/usr/local/bin/a2x-registry
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now a2x-registry
+sudo systemctl status a2x-registry
+```

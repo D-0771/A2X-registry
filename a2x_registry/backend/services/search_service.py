@@ -36,11 +36,12 @@ def _check_taxonomy(dataset: str) -> None:
         return  # not registry-managed — no restriction
     if state == TaxonomyState.UNAVAILABLE:
         raise ValueError(
-            f"Dataset '{dataset}' 的分类树已过时（services 已变更），请先重新 build 再搜索"
+            f"Dataset '{dataset}' taxonomy is stale (services changed); "
+            f"rebuild before searching"
         )
     if state == TaxonomyState.NONEXISTENT:
         raise ValueError(
-            f"Dataset '{dataset}' 尚未构建分类树，请先运行 build"
+            f"Dataset '{dataset}' taxonomy not built; run build first"
         )
 
 

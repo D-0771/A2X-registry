@@ -39,10 +39,10 @@ _service: Optional[RegistryService] = None
 _executor = ThreadPoolExecutor(max_workers=2)
 
 
-def init_registry_service(database_dir: Path, global_config_path: Optional[Path] = None):
+def init_registry_service(database_dir: Path):
     """Initialize the global RegistryService. Called once from backend startup."""
     global _service
-    _service = RegistryService(database_dir, global_config_path)
+    _service = RegistryService(database_dir)
     return _service
 
 
@@ -901,4 +901,4 @@ async def set_vector_config(
         dataset, body.get("embedding_model"), body.get("embedding_dim"),
     )
     search_service.schedule_vector_sync(dataset)
-    return {"dataset": dataset, **cfg, "message": "配置已保存，向量索引将在后台重建"}
+    return {"dataset": dataset, **cfg, "message": "Config saved; vector index will rebuild in background"}
