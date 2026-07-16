@@ -1,7 +1,7 @@
 # 注册中心 API · 手工测试 curl 命令合集
 
-> 基于 [registry_openapi.yaml](./registry_openapi.yaml) (v0.1.0)，覆盖一体机场景全部接口。
-> 默认服务器：`http://127.0.0.1:8000`（设计文档 §4.1 默认 localhost）。
+> 基于 [registry_openapi.yaml](../../registry_openapi.yaml) (v0.1.0)，覆盖一体机场景全部接口。
+> 默认服务器：`http://127.0.0.1:8000`。
 > 命令可直接复制到 bash 运行；每个接口选 1-2 个典型参数组合。
 
 ## 约定
@@ -9,13 +9,30 @@
 - 成功响应只列关键字段，完整形状见 OpenAPI schema。
 - 错误路径在每个接口末尾标注典型一种。
 - 联调场景见末尾 §6。
-- **数据库验证**：每个 curl 步骤后给出 `sqlite3` 命令，直接查 `$A2X_REGISTRY_DB` 验证落库效果。环境变量约定：
+- **数据库验证（SQLite）**：每个 curl 步骤后给出 `sqlite3` 命令，直接查 `$A2X_REGISTRY_DB` 验证落库效果。环境变量约定：
   ```bash
   # 730 单机 SQLite，路径由 registry.env 的 A2X_REGISTRY_HOME 决定
   export A2X_REGISTRY_DB="${A2X_REGISTRY_HOME:-/var/lib/a2x-registry}/registry.db"
   ```
-- 表结构真源：[a2x_registry/common/db.py](./a2x_registry/common/db.py) 的 `SCHEMA_SQL`（4 表：`registry_meta` / `service` / `image` / `instance`）。
+- **数据库验证（rqlite）**：当 `A2X_REGISTRY_DB_KIND=rqlite` 时，验证命令改用 HTTP API。等价命令集中列在 **§8**，curl 测试命令本身与后端无关、无需替换。
+  - rqlite在有浏览器的情况下，也可以直接通过浏览器访问 `http://localhost:4001/console/` 查看数据库状态和执行sql，其中4001为任意节点的端口。
+- 表结构真源：[a2x_registry/common/db.py](../../a2x_registry/common/db.py) 的 `SCHEMA_SQL`（4 表：`registry_meta` / `service` / `image` / `instance`）。
 - **心跳活性不入库**（内存态）：§3 的验证只能查 `instance` 表是否被 sweeper 剔除，不能直接查心跳本身。
+
+## 构建二进制
+以下命令在代码仓根目录执行。
+
+```bash
+source .venv/bin/activate
+pyinstaller --onefile --name a2x-registry --collect-submodules a2x_registry -hidden-import uvicorn.logging --hidden-import uvicorn.protocols.http.auto   --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on 2x_registry/backend/__main__.py --optimize=2
+cp dist/a2x-registry build_test/
+
+# 加载环境变量
+source ./build_test/registry.env
+
+# 启动注册中心
+./build_test/a2x-registry
+```
 
 ---
 
@@ -674,3 +691,277 @@ sqlite3 "$A2X_REGISTRY_DB" \
 | `502` | 注销镜像时镜像仓删除接口失败（外部依赖） | `{"detail":"..."}` |
 
 > `401` / `403` 鉴权错误不在 730 范围（不启鉴权），后续版本启用 `auth/` 模块后补充。
+
+---
+
+## 8. rqlite 版数据库验证
+
+> 当 `A2X_REGISTRY_DB_KIND=rqlite` 时，数据库验证改用 rqlite HTTP API。
+> 本节给出 §1-§6 各 sqlite3 验证块的 rqlite 等价命令；**curl 测试命令本身与后端无关，无需替换**。
+> SQL 语句两版完全一致（rqlite 内嵌 SQLite 引擎），仅调用方式不同：
+> `sqlite3 "$A2X_REGISTRY_DB" "<sql>"` → `rqsql "<sql>"`。
+>
+> 前置：rqlite 三实例集群已按 [start_rqlite_cluster.sh](../../scripts/start_rqlite_cluster.sh) 启动，
+> 任一节点 HTTP 端口（4001 / 4011 / 4021）均可读；写请求会自动转发给 leader。
+
+### 8.0 环境变量与辅助函数
+
+先把下面这段 `rqsql` 辅助函数定义到当前 shell（建议写入 `~/.bashrc` 或测试脚本头部）：
+
+```bash
+# rqlite 查询辅助函数
+# 用法：rqsql '<SQL>' [endpoint]
+# 默认端点取 $A2X_REGISTRY_DB_ENDPOINT，再缺省 http://127.0.0.1:4001
+# 输出：首行表头（| 分隔），其后每行一条记录；空结果输出 (empty)
+rqsql() {
+  local sql="$1"
+  local ep="${2:-${A2X_REGISTRY_DB_ENDPOINT:-http://127.0.0.1:4001}}"
+  local body
+  body=$(python3 -c 'import json,sys; print(json.dumps([sys.argv[1]]))' "$sql")
+  curl -s -X POST "$ep/db/query?associative" \
+    -H 'Content-Type: application/json' \
+    -d "$body" \
+    | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+r = d.get("results", [{}])[0]
+if isinstance(r, dict) and "error" in r:
+    sys.stderr.write("rqlite ERROR: " + str(r["error"]) + "\n")
+    sys.exit(1)
+rows = r.get("rows", [])
+if not rows:
+    print("(empty)")
+    sys.exit(0)
+cols = list(rows[0].keys())
+print("|".join(cols))
+for row in rows:
+    print("|".join("" if v is None else str(v) for v in row.values()))
+'
+}
+
+# 端点环境变量（与 registry.env 的 A2X_REGISTRY_DB_ENDPOINT 对齐）
+export A2X_REGISTRY_DB_ENDPOINT=http://127.0.0.1:4001
+```
+
+**集群级验证**（rqlite 独有，sqlite 无对应）：
+
+```bash
+# 1. 节点清单与 leader（任一节点都可查；leader 字段为 addr:port）
+curl -s http://127.0.0.1:4001/nodes   | python3 -m json.tool
+curl -s http://127.0.0.1:4001/status | python3 -c '
+import sys,json
+s=json.load(sys.stdin).get("store",{})
+l=s.get("leader")
+lr=l.get("addr","") if isinstance(l,dict) else (l or "")
+print("addr=%s leader=%s ready=%s" % (s.get("addr"), lr, s.get("ready")))'
+
+# 2. 复制一致性校验：三节点查同一表，行数应一致（ReadIndex 强一致可省略此步）
+for p in 4001 4011 4021; do
+  printf "node :%s -> " "$p"
+  rqsql "SELECT COUNT(*) AS c FROM image WHERE registry='镜像注册表'" "http://127.0.0.1:$p"
+done | paste -d' ' - -
+```
+
+### 8.1 镜像管理（对应 §1）
+
+**§1.1 注册镜像后**：
+```bash
+rqsql "SELECT framework, framework_version, is_default,
+              json_extract(data,'\$.rootfs.imageurl') AS imageurl,
+              json_extract(data,'\$.cpu') AS cpu
+       FROM image WHERE registry='镜像注册表' AND framework='opencode'"
+# 预期：opencode|v0.2.0|1|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000
+
+rqsql "SELECT registry, kind FROM registry_meta WHERE registry='镜像注册表'"
+# 预期：镜像注册表|image
+```
+
+**§1.2 查询镜像后**：
+```bash
+rqsql "SELECT framework_version, is_default,
+              json_extract(data,'\$.image_module_version') AS mod_ver
+       FROM image WHERE registry='镜像注册表' AND framework='opencode'
+       ORDER BY is_default DESC, framework_version"
+# 预期首行：v0.2.0|1|v1.3
+```
+
+**§1.3 取运行规格后**：
+```bash
+rqsql "SELECT framework_version,
+              json_extract(data,'\$.rootfs.imageurl') AS imageurl,
+              json_extract(data,'\$.cpu') AS cpu,
+              json_extract(data,'\$.memory') AS memory
+       FROM image
+       WHERE registry='镜像注册表' AND framework='opencode' AND is_default=1"
+# 预期：v0.2.0|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000|2048
+```
+
+**§1.4 设默认版本后**：
+```bash
+rqsql "SELECT framework_version, is_default
+       FROM image WHERE registry='镜像注册表' AND framework='opencode'
+       ORDER BY framework_version"
+# 预期（两版本场景）：v0.1.0|0  /  v0.2.0|1
+```
+
+**§1.5 注销镜像后**：
+```bash
+rqsql "SELECT COUNT(*) FROM image
+       WHERE registry='镜像注册表' AND framework='opencode' AND framework_version='v0.2.0'"
+# 预期：0
+
+rqsql "SELECT COUNT(*) FROM image
+       WHERE registry='镜像注册表' AND framework='opencode' AND is_default=1"
+# 预期：1（还有其他版本）或 0（该 framework 已无版本）
+```
+
+### 8.2 实例管理（对应 §2）
+
+**§2.1 注册实例（三方）后**：
+```bash
+rqsql "SELECT service_id, kind, framework, framework_version, node, \"user\",
+              json_extract(data,'\$.address') AS address,
+              json_extract(data,'\$.created_at') AS created_at
+       FROM instance
+       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+# 预期：generic_3f9a1b2c|三方|opencode|v0.2.0|192.168.0.12|user-01|10.244.1.7:4096|2026-07-06T10:00:00Z
+
+rqsql "SELECT registry, kind FROM registry_meta WHERE registry='实例注册表'"
+# 预期：实例注册表|instance
+```
+
+**§2.2 注册实例（九问）后**：
+```bash
+rqsql "SELECT service_id, framework, framework_version, node, \"user\"
+       FROM instance WHERE registry='实例注册表' AND kind='九问'"
+# 预期：generic_9c21d4e5|jiuwen-report|v1.0.0|192.168.0.11|user-02
+```
+
+**§2.3 查询实例后**：
+```bash
+rqsql "SELECT service_id, kind, framework, node, \"user\",
+              json_extract(data,'\$.address') AS address
+       FROM instance WHERE registry='实例注册表' AND node='192.168.0.12'"
+# 预期：列出该 node 全部实例
+
+# 索引命中校验（rqlite 同样走 SQLite 优化器，EXPLAIN 输出形如 SEARCH ... USING INDEX）
+rqsql "EXPLAIN QUERY PLAN
+       SELECT * FROM instance WHERE registry='实例注册表' AND node='192.168.0.12'"
+# 预期：detail 列含 "SEARCH instance USING INDEX idx_instance_node (registry=? AND node=?)"
+```
+
+**§2.4 变更实例后**：
+```bash
+rqsql "SELECT service_id, node, json_extract(data,'\$.address') AS address
+       FROM instance WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+# 预期：generic_3f9a1b2c|192.168.0.20|10.244.3.9:4096
+
+rqsql "SELECT COUNT(*) FROM instance
+       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12'"
+# 预期：0
+```
+
+**§2.5 注销实例后**：
+```bash
+rqsql "SELECT COUNT(*) FROM instance
+       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+# 预期：0（再 DELETE 一次仍为 0，且响应体 deleted=false）
+```
+
+### 8.3 心跳（对应 §3）
+
+> 心跳活性不入库（内存态 `_node_leases`），rqlite 版同样只能间接验证 `instance` 表是否被 sweeper 剔除。
+
+**§3.1 / §3.2 心跳续租期间**：
+```bash
+rqsql "SELECT service_id, node FROM instance
+       WHERE registry='实例注册表' AND node='192.168.0.12'"
+# 预期（续租期间）：列出该 node 全部实例；超 grace_period 后被 expire_node 删除则为 (empty)
+```
+
+### 8.4 租约配置（对应 §4）
+
+> 全局租约策略存在 `registry_meta` 的 `registry='__global__'` 行，`config` JSON 内嵌 `lease_config`。
+
+**§4.1 读全局租约策略后**：
+```bash
+rqsql "SELECT json_extract(config,'\$.lease_config.enabled')  AS enabled,
+              json_extract(config,'\$.lease_config.min_ttl')  AS min_ttl,
+              json_extract(config,'\$.lease_config.max_ttl')  AS max_ttl,
+              json_extract(config,'\$.lease_config.grace_period') AS grace_period
+       FROM registry_meta WHERE registry='__global__'"
+# 预期：1|10|3600|30
+```
+
+**§4.2 改全局租约策略后**：
+```bash
+rqsql "SELECT json_extract(config,'\$.lease_config.grace_period')
+       FROM registry_meta WHERE registry='__global__'"
+# 预期：60
+```
+
+### 8.5 联调场景（对应 §6）
+
+**场景 A（端到端拉起）后**：
+```bash
+rqsql "SELECT service_id, kind, framework, node,
+              json_extract(data,'\$.address') AS address
+       FROM instance
+       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+# 预期：generic_3f9a1b2c|三方|opencode|192.168.0.12|10.244.1.7:4096
+```
+
+**场景 B（落点迁移）后**：
+```bash
+rqsql "SELECT service_id, node, json_extract(data,'\$.address') AS address
+       FROM instance WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+# 预期：generic_3f9a1b2c|192.168.0.20|10.244.3.9:4096
+
+rqsql "SELECT COUNT(*) FROM instance
+       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12'"
+# 预期：0
+```
+
+**场景 C（镜像版本下线）后**：
+```bash
+rqsql "SELECT COUNT(*) FROM image
+       WHERE registry='镜像注册表' AND framework='opencode' AND framework_version='v0.2.0'"
+# 预期：0
+
+rqsql "SELECT framework_version, is_default
+       FROM image WHERE registry='镜像注册表' AND framework='opencode'
+       ORDER BY is_default DESC, framework_version"
+# 预期：剩余版本中恰一行 is_default=1；若已无版本则 (empty)
+
+rqsql "SELECT COUNT(*) FROM instance
+       WHERE registry='实例注册表' AND framework='opencode' AND framework_version='v0.2.0'"
+# 预期（成功下线后）：0
+```
+
+**场景 D（node 故障 → 实例自动异常）后**：
+```bash
+rqsql "SELECT json_extract(config,'\$.lease_config.grace_period')
+       FROM registry_meta WHERE registry='__global__'"
+# 预期：30
+
+rqsql "SELECT COUNT(*) FROM instance
+       WHERE registry='实例注册表' AND node='192.168.0.12'"
+# 预期（超宽限后）：0
+
+rqsql "SELECT DISTINCT node FROM instance WHERE registry='实例注册表'"
+# 预期：故障 node 不在列表中；其他 node 仍列出
+```
+
+### 8.6 rqlite 与 sqlite 验证差异速查
+
+| 维度 | sqlite3 CLI | rqlite (rqsql) |
+|------|-------------|----------------|
+| 调用 | `sqlite3 "$A2X_REGISTRY_DB" "<sql>"` | `rqsql "<sql>"` |
+| 端点 | 本地文件 `$A2X_REGISTRY_DB` | HTTP `$A2X_REGISTRY_DB_ENDPOINT`（默认 `http://127.0.0.1:4001`） |
+| SQL 语法 | SQLite | 完全一致（rqlite 内嵌 SQLite） |
+| 多语句脚本 | 支持（`;` 分隔） | **不支持**，每次 `rqsql` 只发一条 |
+| `json_extract` | 支持 | 支持 |
+| `EXPLAIN QUERY PLAN` | 文本输出 | 表格输出（`detail` 列） |
+| 一致性 | 单机强一致 | leader 强一致；follower 读默认 ReadIndex 强一致 |
+| 集群级验证 | 无 | `/nodes`、`/status`（见 §8.0） |
+| 离线环境 | 无依赖 | 需 rqlite 集群在运行（见 [start_rqlite_cluster.sh](../../scripts/start_rqlite_cluster.sh)） |

@@ -27,6 +27,15 @@ import pytest
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
+# ── Docker rqlite 集群端点（3 节点） ──────────────────────────
+# 对应 build_test/rqliteAutomaticClustering/compose.yaml
+# HTTP 端口映射到宿主：node-1=4001, node-2=4011, node-3=4021
+RQLITE_DOCKER_ENDPOINTS = (
+    "http://127.0.0.1:4001",
+    "http://127.0.0.1:4011",
+    "http://127.0.0.1:4021",
+)
+
 
 # ── 预制 .db 文件路径（只读） ─────────────────────────────────
 
@@ -106,90 +115,66 @@ def appliance_writable_copy(tmp_path, appliance_db_path) -> Iterator[sqlite3.Con
 
 # ── 三后端契约测试 fixtures ──────────────────────────────────
 # sqlite / memory / rqlite 三个 fixture 共用同一组测试断言（参数化 via
-# `backend_factory`），共享同一份 SCHEMA_SQL。rqlite 后端启动一个临时
-# rqlited 进程，session 范围内所有测试复用同一个进程。
-
-def _free_port() -> int:
-    """Pick a free TCP port on 127.0.0.1 for rqlited to listen on."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+# `backend_factory`），共享同一份 SCHEMA_SQL。rqlite 后端连接已运行的
+# Docker 3 节点集群（build_test/rqliteAutomaticClustering/compose.yaml），
+# session 范围内所有测试复用同一个集群，通过 leader 端点写入。
 
 
-def _rqlite_ready(endpoint: str) -> bool:
-    """Probe rqlite /leader until a leader is elected (max ~12s).
+def _find_rqlite_leader(endpoints: tuple[str, ...]) -> str | None:
+    """遍历端点查 /status，返回当前 leader 的 HTTP 端点。
 
-    rqlite HTTP responds before the Raft leader is elected, so just checking
-    the port is not enough — writes return 503 "leader not found". The /leader
-    endpoint returns a node object with ``"leader": true`` once election
-    completes; before that it returns an empty body or a node with
-    ``"leader": false``.
+    rqlite v10 的 /status 返回 ``store.leader`` 为 dict
+    (``{"addr": "<raft-addr>", "node_id": "..."}``)，``store.addr`` 为本节点
+    raft 地址字符串。比较 ``leader["addr"] == store.addr`` 判断本节点是否
+    leader。Docker 集群的 raft 地址用容器 hostname（myrqlite-host-N:4002），
+    从宿主无法解析，但比较字符串即可判断 leader 归属。
+
+    兼容旧版 rqlite（leader 为字符串）。
     """
-    for _ in range(60):
+    for ep in endpoints:
         try:
-            with urllib.request.urlopen(f"{endpoint}/leader", timeout=0.5) as r:
-                if r.status != 200:
-                    time.sleep(0.2)
-                    continue
-                raw = r.read().decode("utf-8").strip()
-                if not raw:
-                    time.sleep(0.2)
-                    continue
-                payload = json.loads(raw)
-                if isinstance(payload, dict) and payload.get("leader") is True:
-                    return True
-        except (urllib.error.URLError, ConnectionError, OSError, json.JSONDecodeError):
-            pass
-        time.sleep(0.2)
-    return False
+            with urllib.request.urlopen(f"{ep}/status", timeout=2) as r:
+                status = json.loads(r.read().decode("utf-8"))
+                store = status.get("store", {})
+                leader = store.get("leader")
+                this_raft = store.get("addr", "")
+                if isinstance(leader, dict):
+                    leader_raft = leader.get("addr", "")
+                else:
+                    leader_raft = leader or ""
+                if leader_raft and this_raft and leader_raft == this_raft:
+                    return ep
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            continue
+    return None
 
 
 @pytest.fixture(scope="session")
-def rqlite_server(tmp_path_factory) -> Iterator[str]:
-    """Start a single-node rqlited for the whole test session.
+def docker_rqlite_cluster() -> Iterator[str]:
+    """连接已运行的 Docker rqlite 3 节点集群，yield leader 的 HTTP 端点。
 
-    Yields the HTTP endpoint (``http://127.0.0.1:<port>``). The process is
-    terminated on teardown. Skips the session if ``rqlited`` is not on PATH
-    or fails to elect a leader within the readiness window.
+    前提：``build_test/rqliteAutomaticClustering`` 下的 compose.yaml 已启动
+   （``docker compose up -d``）。若集群未运行或选主未完成则 skip。
     """
-    if shutil.which("rqlited") is None:
-        pytest.skip("rqlited not installed; skip rqlite backend tests")
+    leader = _find_rqlite_leader(RQLITE_DOCKER_ENDPOINTS)
+    if leader is None:
+        pytest.skip(
+            "Docker rqlite 集群未运行或无 leader；"
+            "请先执行 cd build_test/rqliteAutomaticClustering && docker compose up -d"
+        )
+    yield leader
 
-    data_dir = tmp_path_factory.mktemp("rqlite_data")
-    log_path = tmp_path_factory.mktemp("rqlite_logs") / "rqlited.log"
-    http_port = _free_port()
-    raft_port = _free_port()
-    # Capture stderr to a file so failure diagnostics are available.
-    log_fh = open(log_path, "wb")
-    proc = subprocess.Popen(
-        [
-            "rqlited",
-            "-http-addr", f"127.0.0.1:{http_port}",
-            "-raft-addr", f"127.0.0.1:{raft_port}",
-            str(data_dir),
-        ],
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-    )
-    endpoint = f"http://127.0.0.1:{http_port}"
-    try:
-        if not _rqlite_ready(endpoint):
-            log_fh.close()
-            log_content = log_path.read_text(errors="replace")[-2000:]
-            pytest.skip(
-                f"rqlited failed to elect a leader within 12s. "
-                f"Last log:\n{log_content}"
-            )
-        yield endpoint
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        log_fh.close()
+
+@pytest.fixture(scope="session")
+def docker_rqlite_all_nodes() -> Iterator[tuple[str, ...]]:
+    """返回全部 3 个节点的 HTTP 端点（含 leader + followers），供多节点读复制验证。
+
+    若集群未运行则 skip。
+    """
+    leader = _find_rqlite_leader(RQLITE_DOCKER_ENDPOINTS)
+    if leader is None:
+        pytest.skip("Docker rqlite 集群未运行")
+    yield RQLITE_DOCKER_ENDPOINTS
 
 
 @pytest.fixture
@@ -213,18 +198,52 @@ def memory_backend():
 
 
 @pytest.fixture
-def rqlite_backend(rqlite_server):
-    """rqlite backend with schema initialized; tables dropped on teardown.
+def rqlite_backend(docker_rqlite_cluster):
+    """rqlite backend (Docker 集群 leader) with schema initialized; tables dropped on teardown.
 
     Re-initializes schema before each test (CREATE ... IF NOT EXISTS is
     idempotent). On teardown DROPs *every* user table (not just the 4 schema
-    tables) because rqlite is session-scoped — tests often create scratch
-    tables like ``t`` which must not leak into the next test.
+    tables) because rqlite 集群是 session 级共享的——测试常建临时表如 ``t``，
+    须在 teardown 清掉以免泄漏到下一个测试。
     """
     from a2x_registry.common.db import connect, init_schema
 
-    backend = connect({"kind": "rqlite", "endpoint": rqlite_server})
+    backend = connect({"kind": "rqlite", "endpoint": docker_rqlite_cluster})
     init_schema(backend.conn)
+    yield backend
+    rows = backend.query("SELECT name FROM sqlite_master WHERE type='table'")
+    for row in rows:
+        backend.execute(f'DROP TABLE IF EXISTS "{row["name"]}"')
+
+
+def _seed_appliance_data(backend) -> None:
+    """将 seed_appliance.sql 的样例数据导入 backend。
+
+    与 init_schema 处理 rqlite 的方式一致：先去掉 ``--`` 行注释，再按 ``;``
+    拆分为单语句逐条 execute（rqlite HTTP API 不支持多语句脚本）。
+    """
+    import re
+    seed_path = Path(__file__).parent / "seed_appliance.sql"
+    sql_text = seed_path.read_text(encoding="utf-8")
+    cleaned = re.sub(r"--[^\n]*", "", sql_text)
+    for stmt in cleaned.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            backend.execute(stmt)
+
+
+@pytest.fixture
+def rqlite_seeded_backend(docker_rqlite_cluster):
+    """rqlite backend with schema + appliance 样例数据；teardown 清表。
+
+    供需要预置数据（镜像多版本 / 实例多节点）的 rqlite 测试用，
+    等价于 sqlite 测试里的 ``appliance_conn`` / ``appliance_writable_copy``。
+    """
+    from a2x_registry.common.db import connect, init_schema
+
+    backend = connect({"kind": "rqlite", "endpoint": docker_rqlite_cluster})
+    init_schema(backend.conn)
+    _seed_appliance_data(backend)
     yield backend
     rows = backend.query("SELECT name FROM sqlite_master WHERE type='table'")
     for row in rows:
