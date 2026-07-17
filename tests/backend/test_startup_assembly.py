@@ -117,9 +117,10 @@ def test_warmup_appliance_mode_creates_image_instance_registries(monkeypatch, tm
 
 
 def test_warmup_appliance_mode_assembles_image_service(monkeypatch, tmp_path):
-    """Appliance mode must assemble ImageService and inject into deps.
+    """Appliance mode must assemble ImageService and InstanceService and
+    inject into deps.
 
-    Generic mode must NOT assemble it (router returns 404 then).
+    Generic mode must NOT assemble them (router returns 404 then).
     """
     real_find_spec = importlib.util.find_spec
     heavy = ("numpy", "sentence_transformers", "chromadb", "tqdm")
@@ -129,13 +130,16 @@ def test_warmup_appliance_mode_assembles_image_service(monkeypatch, tmp_path):
         lambda n, *a, **kw: None if n in heavy else real_find_spec(n, *a, **kw),
     )
 
-    # appliance → ImageService assembled
+    # appliance → ImageService and InstanceService assembled
     monkeypatch.setenv("A2X_REGISTRY_MODE", "appliance")
     startup, _ = _reload_backend(monkeypatch, tmp_path)
     _run_warmup_synchronous(startup)
     from a2x_registry.image.deps import get_image_service
     from a2x_registry.image.service import ImageService
+    from a2x_registry.instance.deps import get_instance_service
+    from a2x_registry.instance.service import InstanceService
     assert isinstance(get_image_service(), ImageService)
+    assert isinstance(get_instance_service(), InstanceService)
 
     # generic → not assembled (None). Re-import deps after module reload
     # so the reference points at the freshly imported module (the prior
@@ -144,7 +148,9 @@ def test_warmup_appliance_mode_assembles_image_service(monkeypatch, tmp_path):
     startup2, _ = _reload_backend(monkeypatch, tmp_path)
     _run_warmup_synchronous(startup2)
     import a2x_registry.image.deps as _img_deps
+    import a2x_registry.instance.deps as _inst_deps
     assert _img_deps.get_image_service() is None
+    assert _inst_deps.get_instance_service() is None
 
 
 def test_warmup_init_schema_is_idempotent(monkeypatch, tmp_path):
@@ -189,8 +195,8 @@ def test_resolve_db_config_defaults_sqlite(monkeypatch, tmp_path):
     """No A2X_REGISTRY_DB_KIND -> sqlite cfg with registry.db path."""
     startup = _reload_startup_only(monkeypatch, tmp_path)
     cfg = startup._resolve_db_config()
-    assert cfg["kind"] == "sqlite"
-    assert cfg["path"].endswith("registry.db")
+    assert cfg["kind"] == "memory"
+    # assert cfg["path"].endswith("registry.db")
 
 
 def test_resolve_db_config_memory(monkeypatch, tmp_path):

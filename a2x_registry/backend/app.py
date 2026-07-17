@@ -18,6 +18,7 @@ from a2x_registry.auth.router import router as auth_router
 from a2x_registry.heartbeat.router import router as heartbeat_router
 from a2x_registry.cluster.router import router as cluster_router
 from a2x_registry.image.router import router as image_router
+from a2x_registry.instance.router import router as instance_router
 
 app = FastAPI(
     title="A2X Registry Demo",
@@ -50,6 +51,10 @@ app.include_router(cluster_router)
 # assembly; when not assembled, _resolve_service in the router returns
 # 404 (same fallback semantics as heartbeat/cluster).
 app.include_router(image_router)
+# Instance management endpoints. Accessible only after appliance-mode
+# assembly; when not assembled, _resolve_service in the router returns
+# 404 (same fallback semantics as heartbeat/cluster/image).
+app.include_router(instance_router)
 
 
 @app.exception_handler(FeatureNotInstalledError)

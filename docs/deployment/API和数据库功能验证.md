@@ -24,7 +24,7 @@
 
 ```bash
 source .venv/bin/activate
-pyinstaller --onefile --name a2x-registry --collect-submodules a2x_registry -hidden-import uvicorn.logging --hidden-import uvicorn.protocols.http.auto   --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on 2x_registry/backend/__main__.py --optimize=2
+pyinstaller --onefile --name a2x-registry --collect-submodules a2x_registry --hidden-import uvicorn.logging --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on a2x_registry/backend/__main__.py --optimize=2
 cp dist/a2x-registry build_test/
 
 # 加载环境变量

@@ -124,10 +124,16 @@ def run_warmup() -> None:
             if mode == "appliance":
                 from a2x_registry.image.service import ImageService
                 from a2x_registry.image.deps import set_image_service
+                from a2x_registry.instance.service import InstanceService
+                from a2x_registry.instance.deps import set_instance_service
 
                 image_svc = ImageService(table_svc)
                 set_image_service(image_svc)
                 logger.info("  ImageService assembled (appliance mode)")
+
+                instance_svc = InstanceService(table_svc)
+                set_instance_service(instance_svc)
+                logger.info("  InstanceService assembled (appliance mode)")
         except Exception as exc:
             logger.error("  SQL backend init failed: %s", exc, exc_info=True)
             raise
