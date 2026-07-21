@@ -72,6 +72,19 @@ class InstanceService:
         """
         self._is_node_expired = callback
 
+    def set_heartbeat_service(self, hb) -> None:
+        """Inject (or clear) a HeartbeatManager for status derivation.
+
+        Convenience wrapper around ``set_heartbeat_check``: wires
+        ``hb.is_expired`` as the node-expiration callback. Passing ``None``
+        clears the callback (all instances -> 运行). This is the injection
+        point called by backend startup in appliance mode.
+        """
+        if hb is None:
+            self.set_heartbeat_check(None)
+        else:
+            self.set_heartbeat_check(hb.is_expired)
+
     # ------------------------------------------------------------------
     # register_instance (idempotent upsert)
     # ------------------------------------------------------------------
