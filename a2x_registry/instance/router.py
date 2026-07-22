@@ -3,20 +3,21 @@
 Routes (mounted at app level, prefix ``/api/instances``):
 
     POST   /api/instances                  register_instance (gateway)
-    GET    /api/instances                  list_instances (user; filters + include_unhealthy)
+    GET    /api/instances                  list_instances (user; ?size/?page/?include_unhealthy/?node/?framework/?kind/?user)
     PATCH  /api/instances/{service_id}     update_instance (gateway)
     DELETE /api/instances/{service_id}     deregister_instance (gateway)
 
-When the instance module is not assembled (non-appliance mode), all
-routes return 404.
+V2: ``GET /api/instances`` supports pagination (``size`` / ``page``) with
+``X-Total-Count`` etc. headers when ``size > 0``.
 """
 
 from __future__ import annotations
 
+import math
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from a2x_registry.register.errors import NotFoundError, ValidationError
 
@@ -34,12 +35,6 @@ router = APIRouter(prefix="/api/instances", tags=["instance"])
 
 
 def _resolve_service():
-    """Return the assembled InstanceService, or raise 404 if not assembled.
-
-    404 (vs 503): from a non-appliance registry's perspective these
-    routes do not exist at all, matching the fallback semantics of an
-    uninitialized heartbeat module.
-    """
     svc = get_instance_service()
     if svc is None:
         raise HTTPException(
@@ -54,7 +49,6 @@ def _resolve_service():
 
 @router.post("", response_model=InstanceEntry)
 async def register_instance(req: RegisterInstanceRequest):
-    """Register an instance (caller: gateway). Idempotent upsert by service_id."""
     svc = _resolve_service()
     try:
         return svc.register_instance(req.model_dump())
@@ -69,6 +63,9 @@ async def list_instances(
     framework: Optional[str] = Query(None),
     kind: Optional[str] = Query(None),
     user: Optional[str] = Query(None),
+    size: int = Query(-1, description="Page size; -1 = no pagination"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    response: Response = None,  # noqa: B008 - FastAPI injected
 ):
     """Query instances with optional filters; status is derived per-query."""
     svc = _resolve_service()
@@ -77,12 +74,24 @@ async def list_instances(
             "node": node, "framework": framework, "kind": kind, "user": user,
         }.items() if v is not None
     }
-    return svc.list_instances(filter=flt or None, include_unhealthy=include_unhealthy)
+    rows, total = svc.list_instances(
+        filter=flt or None,
+        include_unhealthy=include_unhealthy,
+        size=size,
+        page=page,
+    )
+    if size > 0:
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Page"] = str(page)
+        response.headers["X-Total-Pages"] = str(
+            max(1, math.ceil(total / size)) if total > 0 else 1
+        )
+        response.headers["X-Page-Size"] = str(len(rows))
+    return rows
 
 
 @router.patch("/{service_id}", response_model=InstanceEntry)
 async def update_instance(service_id: str, req: UpdateInstanceRequest):
-    """Update an instance's node and/or address (caller: gateway)."""
     svc = _resolve_service()
     fields = {k: v for k, v in req.model_dump().items() if v is not None}
     try:
@@ -95,6 +104,5 @@ async def update_instance(service_id: str, req: UpdateInstanceRequest):
 
 @router.delete("/{service_id}", response_model=InstanceDeleteResponse)
 async def deregister_instance(service_id: str):
-    """Deregister an instance (caller: gateway). Idempotent."""
     svc = _resolve_service()
     return svc.deregister_instance(service_id)

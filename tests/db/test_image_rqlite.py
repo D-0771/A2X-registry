@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 
-IMG_REG = "镜像注册表"
-INS_REG = "实例注册表"
+IMG_REG = "images"
+INS_REG = "instances"
 
 
 # ── register_image：首版自动默认 ─────────────────────────────

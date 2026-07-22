@@ -42,8 +42,8 @@ def test_create_registry_routes_by_kind(fresh_conn):
     """不同 kind 的注册表各行其道：service / image / instance。"""
     sql = "INSERT OR IGNORE INTO registry_meta(registry, kind) VALUES (?, ?)"
     for name, kind in [("default", "service"),
-                        ("镜像注册表", "image"),
-                        ("实例注册表", "instance")]:
+                        ("images", "image"),
+                        ("instances", "instance")]:
         fresh_conn.execute(sql, (name, kind))
     fresh_conn.commit()
 
@@ -51,7 +51,7 @@ def test_create_registry_routes_by_kind(fresh_conn):
         "SELECT registry, kind FROM registry_meta ORDER BY registry"
     ).fetchall()
     kinds = {r["registry"]: r["kind"] for r in rows}
-    assert kinds == {"default": "service", "镜像注册表": "image", "实例注册表": "instance"}
+    assert kinds == {"default": "service", "images": "image", "instances": "instance"}
 
 
 # ── register：幂等 upsert ────────────────────────────────────

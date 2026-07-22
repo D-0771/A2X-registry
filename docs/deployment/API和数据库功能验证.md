@@ -76,17 +76,17 @@ curl -X POST http://127.0.0.1:8000/api/images \
 
 **数据库验证**：
 ```bash
-# 1. image 表新增一行（registry='镜像注册表'），data JSON 含 imageurl/cpu
+# 1. image 表新增一行（registry='images'），data JSON 含 imageurl/cpu
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework, framework_version, is_default,
           json_extract(data,'\$.rootfs.imageurl') AS imageurl,
           json_extract(data,'\$.cpu') AS cpu
-   FROM image WHERE registry='镜像注册表' AND framework='opencode';"
+   FROM image WHERE registry='images' AND framework='opencode';"
 # 预期：opencode|v0.2.0|1|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000
 
-# 2. registry_meta 已登记 '镜像注册表'（启动期 create_registry）
+# 2. registry_meta 已登记 'images'（启动期 create_registry）
 sqlite3 "$A2X_REGISTRY_DB" \
-  "SELECT registry, kind FROM registry_meta WHERE registry='镜像注册表';"
+  "SELECT registry, kind FROM registry_meta WHERE registry='images';"
 # 预期：镜像注册表|image
 ```
 
@@ -115,7 +115,7 @@ curl 'http://127.0.0.1:8000/api/images?framework=opencode'
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework_version, is_default,
           json_extract(data,'\$.image_module_version') AS mod_ver
-   FROM image WHERE registry='镜像注册表' AND framework='opencode'
+   FROM image WHERE registry='images' AND framework='opencode'
    ORDER BY is_default DESC, framework_version;"
 # 预期首行：v0.2.0|1|v1.3（is_default=1 排在前）
 ```
@@ -155,7 +155,7 @@ sqlite3 "$A2X_REGISTRY_DB" \
           json_extract(data,'\$.cpu') AS cpu,
           json_extract(data,'\$.memory') AS memory
    FROM image
-   WHERE registry='镜像注册表' AND framework='opencode' AND is_default=1;"
+   WHERE registry='images' AND framework='opencode' AND is_default=1;"
 # 预期：v0.2.0|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000|2048
 ```
 
@@ -183,7 +183,7 @@ curl -X PUT http://127.0.0.1:8000/api/images/opencode/default \
 # 同 framework 下应恰有一行 is_default=1（新版），其他均为 0
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework_version, is_default
-   FROM image WHERE registry='镜像注册表' AND framework='opencode'
+   FROM image WHERE registry='images' AND framework='opencode'
    ORDER BY framework_version;"
 # 预期（两版本场景）：v0.1.0|0  /  v0.2.0|1
 ```
@@ -209,13 +209,13 @@ curl -X DELETE http://127.0.0.1:8000/api/images/opencode/v0.2.0
 # 1. image 表对应行已删除
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM image
-   WHERE registry='镜像注册表' AND framework='opencode' AND framework_version='v0.2.0';"
+   WHERE registry='images' AND framework='opencode' AND framework_version='v0.2.0';"
 # 预期：0
 
 # 2. 若删的是默认版本，应自动补一个新默认（同 framework 下剩余行恰一行 is_default=1）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM image
-   WHERE registry='镜像注册表' AND framework='opencode' AND is_default=1;"
+   WHERE registry='images' AND framework='opencode' AND is_default=1;"
 # 预期：1（如还有其他版本）或 0（如该 framework 已无任何版本）
 ```
 
@@ -258,18 +258,18 @@ curl -X POST http://127.0.0.1:8000/api/instances \
 
 **数据库验证**：
 ```bash
-# 1. instance 表新增一行（registry='实例注册表'），data JSON 含 address
+# 1. instance 表新增一行（registry='instances'），data JSON 含 address
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, kind, framework, framework_version, node, \"user\",
           json_extract(data,'\$.address') AS address,
           json_extract(data,'\$.created_at') AS created_at
    FROM instance
-   WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c';"
+   WHERE registry='instances' AND service_id='generic_3f9a1b2c';"
 # 预期：generic_3f9a1b2c|三方|opencode|v0.2.0|192.168.0.12|user-01|10.244.1.7:4096|2026-07-06T10:00:00Z
 
-# 2. registry_meta 已登记 '实例注册表'
+# 2. registry_meta 已登记 'instances'
 sqlite3 "$A2X_REGISTRY_DB" \
-  "SELECT registry, kind FROM registry_meta WHERE registry='实例注册表';"
+  "SELECT registry, kind FROM registry_meta WHERE registry='instances';"
 # 预期：实例注册表|instance
 ```
 
@@ -296,7 +296,7 @@ curl -X POST http://127.0.0.1:8000/api/instances \
 # instance 表中 kind='九问' 行
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, framework, framework_version, node, \"user\"
-   FROM instance WHERE registry='实例注册表' AND kind='九问';"
+   FROM instance WHERE registry='instances' AND kind='九问';"
 # 预期：generic_9c21d4e5|jiuwen-report|v1.0.0|192.168.0.11|user-02
 ```
 
@@ -321,13 +321,13 @@ curl 'http://127.0.0.1:8000/api/instances?node=192.168.0.12&include_unhealthy=tr
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, kind, framework, node, \"user\",
           json_extract(data,'\$.address') AS address
-   FROM instance WHERE registry='实例注册表' AND node='192.168.0.12';"
+   FROM instance WHERE registry='instances' AND node='192.168.0.12';"
 # 预期：列出该 node 全部实例（含已派生为'异常'但未剔除的行；超 grace_period 被剔除后此处为空）
 
 # 索引命中校验（EXPLAIN QUERY PLAN 应走 idx_instance_node）
 sqlite3 "$A2X_REGISTRY_DB" \
   "EXPLAIN QUERY PLAN
-   SELECT * FROM instance WHERE registry='实例注册表' AND node='192.168.0.12';"
+   SELECT * FROM instance WHERE registry='instances' AND node='192.168.0.12';"
 # 预期：SEARCH ... USING INDEX idx_instance_node (registry=? AND node=?)
 ```
 
@@ -350,13 +350,13 @@ curl -X PATCH http://127.0.0.1:8000/api/instances/generic_3f9a1b2c \
 # instance 表中该 service_id 的 node 列 + data.address 已更新
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, node, json_extract(data,'\$.address') AS address
-   FROM instance WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c';"
+   FROM instance WHERE registry='instances' AND service_id='generic_3f9a1b2c';"
 # 预期：generic_3f9a1b2c|192.168.0.20|10.244.3.9:4096
 
 # 旧 node='192.168.0.12' 下应已无该实例
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12';"
+   WHERE registry='instances' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12';"
 # 预期：0
 ```
 
@@ -380,7 +380,7 @@ curl -X DELETE http://127.0.0.1:8000/api/instances/generic_3f9a1b2c
 # 1. instance 表该行已删除
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c';"
+   WHERE registry='instances' AND service_id='generic_3f9a1b2c';"
 # 预期：0
 
 # 2. 再次 DELETE 后再查（幂等验证）：依然 0，且响应体 deleted=false
@@ -422,7 +422,7 @@ curl -X POST http://127.0.0.1:8000/api/nodes/192.168.0.12/heartbeat \
 # 心跳本身不入库 —— 验证 instance 表中该 node 实例仍存在（未被剔除）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, node FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期（续租期间）：列出该 node 全部实例，例如 generic_3f9a1b2c|192.168.0.12
 
 # 若停止心跳超过 ttl + grace_period（默认 90+30=120s，见 §4）后再查：
@@ -445,7 +445,7 @@ curl -X POST http://127.0.0.1:8000/api/nodes/192.168.0.12/heartbeat \
 # 同 §3.1 -- 心跳活性不入库；透传 status 字段不写库
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期：与 §3.1 一致（仅受 ttl + grace_period / 剔除影响）
 ```
 
@@ -491,13 +491,13 @@ curl -X POST http://127.0.0.1:8000/api/lease-config \
 # 步骤 3（超 ttl 未超 grace）：instance 表行仍在（status 不落库，但 API 返回异常）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期：1（或该 node 实例数）
 
 # 步骤 4（超 grace）：sweeper 已调 expire_node，行被删除
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期：0
 ```
 
@@ -652,7 +652,7 @@ sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, kind, framework, node,
           json_extract(data,'\$.address') AS address
    FROM instance
-   WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c';"
+   WHERE registry='instances' AND service_id='generic_3f9a1b2c';"
 # 预期：generic_3f9a1b2c|三方|opencode|192.168.0.12|10.244.1.7:4096
 ```
 
@@ -675,13 +675,13 @@ curl -X POST http://127.0.0.1:8000/api/nodes/192.168.0.20/heartbeat \
 # 1. 实例已迁到新 node，address 已更新；service_id 不变
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, node, json_extract(data,'\$.address') AS address
-   FROM instance WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c';"
+   FROM instance WHERE registry='instances' AND service_id='generic_3f9a1b2c';"
 # 预期：generic_3f9a1b2c|192.168.0.20|10.244.3.9:4096
 
 # 2. 旧 node='192.168.0.12' 下已无该实例
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12';"
+   WHERE registry='instances' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12';"
 # 预期：0
 ```
 
@@ -700,20 +700,20 @@ curl -X DELETE http://127.0.0.1:8000/api/images/opencode/v0.2.0
 # 1. image 表对应版本行已删除
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM image
-   WHERE registry='镜像注册表' AND framework='opencode' AND framework_version='v0.2.0';"
+   WHERE registry='images' AND framework='opencode' AND framework_version='v0.2.0';"
 # 预期：0
 
 # 2. 该 framework 下若仍有其他版本，应恰有一行 is_default=1（自动补默认）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework_version, is_default
-   FROM image WHERE registry='镜像注册表' AND framework='opencode'
+   FROM image WHERE registry='images' AND framework='opencode'
    ORDER BY is_default DESC, framework_version;"
 # 预期：剩余版本中恰一行 is_default=1；若该 framework 已无版本则空
 
 # 3. 注销前的在用实例校验：instance 表中引用该 fw+ver 的行（DELETE 镜像前应已迁走）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND framework='opencode' AND framework_version='v0.2.0';"
+   WHERE registry='instances' AND framework='opencode' AND framework_version='v0.2.0';"
 # 预期（成功下线后）：0（镜像可删的前提就是无在用实例）
 ```
 
@@ -752,12 +752,12 @@ curl -s http://127.0.0.1:8000/api/lease-config
 # 2. 等 ttl + grace_period 后查 instance 表：NodeHeartbeatSweeper 调 expire_node 应已删除该 node 全部实例
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期（超宽限后）：0
 
 # 3. 其他 node 上的实例不受影响（横向校验）
 sqlite3 "$A2X_REGISTRY_DB" \
-  "SELECT DISTINCT node FROM instance WHERE registry='实例注册表';"
+  "SELECT DISTINCT node FROM instance WHERE registry='instances';"
 # 预期：故障 node 不在列表中；其他 node 仍列出
 ```
 
@@ -804,19 +804,19 @@ curl -X POST http://127.0.0.1:8000/api/lease-config \
 # 1. 重启后实例仍在库中（SQLite 持久化，不受重启影响）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT service_id, node FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期（步骤 2）：列出该 node 全部实例
 
 # 2. 若 gateway 重新心跳（步骤 3）-> 实例仍在，status 恢复运行
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期（步骤 3 后）：1（或该 node 实例数，未变）
 
 # 3. 若 gateway 未在 grace 内重新心跳（步骤 4）-> sweeper 剔除，行被删除
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT COUNT(*) FROM instance
-   WHERE registry='实例注册表' AND node='192.168.0.12';"
+   WHERE registry='instances' AND node='192.168.0.12';"
 # 预期（步骤 4 后）：0
 ```
 
@@ -899,7 +899,7 @@ print("addr=%s leader=%s ready=%s" % (s.get("addr"), lr, s.get("ready")))'
 # 2. 复制一致性校验：三节点查同一表，行数应一致（ReadIndex 强一致可省略此步）
 for p in 4001 4011 4021; do
   printf "node :%s -> " "$p"
-  rqsql "SELECT COUNT(*) AS c FROM image WHERE registry='镜像注册表'" "http://127.0.0.1:$p"
+  rqsql "SELECT COUNT(*) AS c FROM image WHERE registry='images'" "http://127.0.0.1:$p"
 done | paste -d' ' - -
 ```
 
@@ -910,10 +910,10 @@ done | paste -d' ' - -
 rqsql "SELECT framework, framework_version, is_default,
               json_extract(data,'\$.rootfs.imageurl') AS imageurl,
               json_extract(data,'\$.cpu') AS cpu
-       FROM image WHERE registry='镜像注册表' AND framework='opencode'"
+       FROM image WHERE registry='images' AND framework='opencode'"
 # 预期：opencode|v0.2.0|1|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000
 
-rqsql "SELECT registry, kind FROM registry_meta WHERE registry='镜像注册表'"
+rqsql "SELECT registry, kind FROM registry_meta WHERE registry='images'"
 # 预期：镜像注册表|image
 ```
 
@@ -921,7 +921,7 @@ rqsql "SELECT registry, kind FROM registry_meta WHERE registry='镜像注册表'
 ```bash
 rqsql "SELECT framework_version, is_default,
               json_extract(data,'\$.image_module_version') AS mod_ver
-       FROM image WHERE registry='镜像注册表' AND framework='opencode'
+       FROM image WHERE registry='images' AND framework='opencode'
        ORDER BY is_default DESC, framework_version"
 # 预期首行：v0.2.0|1|v1.3
 ```
@@ -933,14 +933,14 @@ rqsql "SELECT framework_version,
               json_extract(data,'\$.cpu') AS cpu,
               json_extract(data,'\$.memory') AS memory
        FROM image
-       WHERE registry='镜像注册表' AND framework='opencode' AND is_default=1"
+       WHERE registry='images' AND framework='opencode' AND is_default=1"
 # 预期：v0.2.0|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000|2048
 ```
 
 **§1.4 设默认版本后**：
 ```bash
 rqsql "SELECT framework_version, is_default
-       FROM image WHERE registry='镜像注册表' AND framework='opencode'
+       FROM image WHERE registry='images' AND framework='opencode'
        ORDER BY framework_version"
 # 预期（两版本场景）：v0.1.0|0  /  v0.2.0|1
 ```
@@ -948,11 +948,11 @@ rqsql "SELECT framework_version, is_default
 **§1.5 注销镜像后**：
 ```bash
 rqsql "SELECT COUNT(*) FROM image
-       WHERE registry='镜像注册表' AND framework='opencode' AND framework_version='v0.2.0'"
+       WHERE registry='images' AND framework='opencode' AND framework_version='v0.2.0'"
 # 预期：0
 
 rqsql "SELECT COUNT(*) FROM image
-       WHERE registry='镜像注册表' AND framework='opencode' AND is_default=1"
+       WHERE registry='images' AND framework='opencode' AND is_default=1"
 # 预期：1（还有其他版本）或 0（该 framework 已无版本）
 ```
 
@@ -964,17 +964,17 @@ rqsql "SELECT service_id, kind, framework, framework_version, node, \"user\",
               json_extract(data,'\$.address') AS address,
               json_extract(data,'\$.created_at') AS created_at
        FROM instance
-       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+       WHERE registry='instances' AND service_id='generic_3f9a1b2c'"
 # 预期：generic_3f9a1b2c|三方|opencode|v0.2.0|192.168.0.12|user-01|10.244.1.7:4096|2026-07-06T10:00:00Z
 
-rqsql "SELECT registry, kind FROM registry_meta WHERE registry='实例注册表'"
+rqsql "SELECT registry, kind FROM registry_meta WHERE registry='instances'"
 # 预期：实例注册表|instance
 ```
 
 **§2.2 注册实例（九问）后**：
 ```bash
 rqsql "SELECT service_id, framework, framework_version, node, \"user\"
-       FROM instance WHERE registry='实例注册表' AND kind='九问'"
+       FROM instance WHERE registry='instances' AND kind='九问'"
 # 预期：generic_9c21d4e5|jiuwen-report|v1.0.0|192.168.0.11|user-02
 ```
 
@@ -982,30 +982,30 @@ rqsql "SELECT service_id, framework, framework_version, node, \"user\"
 ```bash
 rqsql "SELECT service_id, kind, framework, node, \"user\",
               json_extract(data,'\$.address') AS address
-       FROM instance WHERE registry='实例注册表' AND node='192.168.0.12'"
+       FROM instance WHERE registry='instances' AND node='192.168.0.12'"
 # 预期：列出该 node 全部实例
 
 # 索引命中校验（rqlite 同样走 SQLite 优化器，EXPLAIN 输出形如 SEARCH ... USING INDEX）
 rqsql "EXPLAIN QUERY PLAN
-       SELECT * FROM instance WHERE registry='实例注册表' AND node='192.168.0.12'"
+       SELECT * FROM instance WHERE registry='instances' AND node='192.168.0.12'"
 # 预期：detail 列含 "SEARCH instance USING INDEX idx_instance_node (registry=? AND node=?)"
 ```
 
 **§2.4 变更实例后**：
 ```bash
 rqsql "SELECT service_id, node, json_extract(data,'\$.address') AS address
-       FROM instance WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+       FROM instance WHERE registry='instances' AND service_id='generic_3f9a1b2c'"
 # 预期：generic_3f9a1b2c|192.168.0.20|10.244.3.9:4096
 
 rqsql "SELECT COUNT(*) FROM instance
-       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12'"
+       WHERE registry='instances' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12'"
 # 预期：0
 ```
 
 **§2.5 注销实例后**：
 ```bash
 rqsql "SELECT COUNT(*) FROM instance
-       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+       WHERE registry='instances' AND service_id='generic_3f9a1b2c'"
 # 预期：0（再 DELETE 一次仍为 0，且响应体 deleted=false）
 ```
 
@@ -1016,7 +1016,7 @@ rqsql "SELECT COUNT(*) FROM instance
 **§3.1 / §3.2 心跳续租期间**：
 ```bash
 rqsql "SELECT service_id, node FROM instance
-       WHERE registry='实例注册表' AND node='192.168.0.12'"
+       WHERE registry='instances' AND node='192.168.0.12'"
 # 预期（续租期间）：列出该 node 全部实例；超 grace_period 后被 expire_node 删除则为 (empty)
 ```
 
@@ -1039,34 +1039,34 @@ curl -s http://127.0.0.1:8000/api/lease-config | python3 -m json.tool
 rqsql "SELECT service_id, kind, framework, node,
               json_extract(data,'\$.address') AS address
        FROM instance
-       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+       WHERE registry='instances' AND service_id='generic_3f9a1b2c'"
 # 预期：generic_3f9a1b2c|三方|opencode|192.168.0.12|10.244.1.7:4096
 ```
 
 **场景 B（落点迁移）后**：
 ```bash
 rqsql "SELECT service_id, node, json_extract(data,'\$.address') AS address
-       FROM instance WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c'"
+       FROM instance WHERE registry='instances' AND service_id='generic_3f9a1b2c'"
 # 预期：generic_3f9a1b2c|192.168.0.20|10.244.3.9:4096
 
 rqsql "SELECT COUNT(*) FROM instance
-       WHERE registry='实例注册表' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12'"
+       WHERE registry='instances' AND service_id='generic_3f9a1b2c' AND node='192.168.0.12'"
 # 预期：0
 ```
 
 **场景 C（镜像版本下线）后**：
 ```bash
 rqsql "SELECT COUNT(*) FROM image
-       WHERE registry='镜像注册表' AND framework='opencode' AND framework_version='v0.2.0'"
+       WHERE registry='images' AND framework='opencode' AND framework_version='v0.2.0'"
 # 预期：0
 
 rqsql "SELECT framework_version, is_default
-       FROM image WHERE registry='镜像注册表' AND framework='opencode'
+       FROM image WHERE registry='images' AND framework='opencode'
        ORDER BY is_default DESC, framework_version"
 # 预期：剩余版本中恰一行 is_default=1；若已无版本则 (empty)
 
 rqsql "SELECT COUNT(*) FROM instance
-       WHERE registry='实例注册表' AND framework='opencode' AND framework_version='v0.2.0'"
+       WHERE registry='instances' AND framework='opencode' AND framework_version='v0.2.0'"
 # 预期（成功下线后）：0
 ```
 
@@ -1077,10 +1077,10 @@ curl -s http://127.0.0.1:8000/api/lease-config
 # 预期：对应步骤中设置的值
 
 rqsql "SELECT COUNT(*) FROM instance
-       WHERE registry='实例注册表' AND node='192.168.0.12'"
+       WHERE registry='instances' AND node='192.168.0.12'"
 # 预期（超宽限后）：0
 
-rqsql "SELECT DISTINCT node FROM instance WHERE registry='实例注册表'"
+rqsql "SELECT DISTINCT node FROM instance WHERE registry='instances'"
 # 预期：故障 node 不在列表中；其他 node 仍列出
 ```
 

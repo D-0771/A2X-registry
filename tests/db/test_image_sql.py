@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import json
 
-IMG_REG = "镜像注册表"
-INS_REG = "实例注册表"
+IMG_REG = "images"
+INS_REG = "instances"
 
 
 # ── register_image：首版自动默认 ─────────────────────────────
@@ -31,9 +31,9 @@ def test_first_version_auto_default(fresh_conn):
     is_default = 1 if cnt == 0 else 0
 
     fresh_conn.execute(
-        "INSERT INTO image(registry, service_id, framework, framework_version, is_default, data) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (IMG_REG, f"img_{fw}_{ver}", fw, ver, is_default, "{}"),
+        "INSERT INTO image(registry, service_id, framework, framework_version, version_key, is_default, data) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (IMG_REG, f"img_{fw}_{ver}", fw, ver, "00001.00000.00000~", is_default, "{}"),
     )
     fresh_conn.commit()
 
@@ -49,9 +49,9 @@ def test_second_version_not_default(fresh_conn):
     fw = "autogen2"
     # 第一版
     fresh_conn.execute(
-        "INSERT INTO image(registry, service_id, framework, framework_version, is_default, data) "
-        "VALUES (?, ?, ?, ?, 1, '{}')",
-        (IMG_REG, f"img_{fw}_1.0", fw, "1.0"),
+        "INSERT INTO image(registry, service_id, framework, framework_version, version_key, is_default, data) "
+        "VALUES (?, ?, ?, ?, ?, 1, '{}')",
+        (IMG_REG, f"img_{fw}_1.0", fw, "1.0", "00001.00000.00000~"),
     )
     # 第二版
     cnt = fresh_conn.execute(
@@ -60,9 +60,9 @@ def test_second_version_not_default(fresh_conn):
     ).fetchone()[0]
     is_default = 1 if cnt == 0 else 0
     fresh_conn.execute(
-        "INSERT INTO image(registry, service_id, framework, framework_version, is_default, data) "
-        "VALUES (?, ?, ?, ?, ?, '{}')",
-        (IMG_REG, f"img_{fw}_2.0", fw, "2.0", is_default),
+        "INSERT INTO image(registry, service_id, framework, framework_version, version_key, is_default, data) "
+        "VALUES (?, ?, ?, ?, ?, ?, '{}')",
+        (IMG_REG, f"img_{fw}_2.0", fw, "2.0", "00002.00000.00000~", is_default),
     )
     fresh_conn.commit()
 
@@ -237,18 +237,17 @@ def test_deregister_default_reassigns_to_latest(appliance_writable_copy):
 # ── resolve_launch_spec：抽元戎运行规格 ──────────────────────
 
 def test_resolve_launch_spec_exact_version(appliance_conn):
-    """按 framework+version 精确查一行，抽 rootfs/cpu/memory/ports/env。"""
+    """按 framework+version 精确查一行，抽 imageurl/cpu/memory/ports/env。"""
     row = appliance_conn.execute(
         "SELECT data FROM image WHERE registry=? AND framework=? AND framework_version=?",
         (IMG_REG, "langchain", "0.2.0"),
     ).fetchone()
     data = json.loads(row["data"])
-    spec = {k: data[k] for k in ("rootfs", "cpu", "memory", "ports", "env")}
+    spec = {k: data[k] for k in ("imageurl", "cpu", "memory", "ports", "env")}
     assert spec["cpu"] == 2
     assert spec["memory"] == "1Gi"
     assert spec["ports"] == [8080]
-    assert spec["rootfs"]["type"] == "docker"
-    assert spec["rootfs"]["imageurl"] == "registry.local/langchain:0.2.0"
+    assert spec["imageurl"] == "registry.local/langchain:0.2.0"
 
 
 def test_resolve_launch_spec_uses_default_when_version_omitted(appliance_conn):
@@ -281,10 +280,10 @@ def test_resolve_launch_spec_404_on_missing_framework(appliance_conn):
 def test_deregister_records_imageurl_before_delete(appliance_conn):
     """删镜像前需先取 imageurl（调镜像仓 delete(imageurl)）。
 
-    SQL 模式：删行前 SELECT json_extract(data, '$.rootfs.imageurl')。
+    SQL 模式：删行前 SELECT json_extract(data, '$.imageurl')。
     """
     row = appliance_conn.execute(
-        "SELECT json_extract(data, '$.rootfs.imageurl') AS url FROM image "
+        "SELECT json_extract(data, '$.imageurl') AS url FROM image "
         "WHERE registry=? AND framework=? AND framework_version=?",
         (IMG_REG, "langchain", "0.1.0"),
     ).fetchone()

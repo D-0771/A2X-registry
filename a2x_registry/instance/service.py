@@ -12,14 +12,17 @@ columns, so ``update_instance`` must merge ``address`` into the existing
 ``status`` (运行 / 异常) is never persisted — it is derived per-query
 from a node-heartbeat callback injected via ``set_heartbeat_check``.
 When no callback is injected (P0-4 standalone, or heartbeat module not
-loaded), all instances are considered healthy (运行). P0-5 will inject
-the real per-node expiration check.
+loaded), all instances are considered healthy (运行).
+
+V2: ``list_instances`` supports pagination (``size``/``page``),
+deterministic ordering (``framework, "user", service_id``), and SQL-side
+push-down for ``include_unhealthy=False`` via ``expired_nodes()``.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from a2x_registry.common.ids import now_iso
 from a2x_registry.register.service import RegistryTableService
@@ -28,10 +31,7 @@ from .errors import InstanceNotFoundError, InstanceValidationError
 
 logger = logging.getLogger(__name__)
 
-# Named registry identifier (must match the name created by startup.py
-# in appliance mode; stored in the ``registry`` column of the instance
-# table and is part of the design-spec data contract).
-INSTANCE_REGISTRY = "实例注册表"
+INSTANCE_REGISTRY = "instances"
 
 # Accepted instance kinds (OpenAPI enum).
 _VALID_KINDS = ("三方", "九问")
@@ -45,64 +45,48 @@ _REQUIRED_FIELDS = (
 # Callback type: (node_ip) -> is_expired
 NodeExpiredCheck = Callable[[str], bool]
 
+# Deterministic sort order for instance listing (V2).
+_INSTANCE_ORDER = 'framework ASC, "user" ASC, service_id ASC'
+
 
 class InstanceService:
-    """Instance management business layer.
+    """Instance management business layer."""
 
-    Injects ``RegistryTableService`` for persistence. A heartbeat
-    expiration callback (``set_heartbeat_check``) is optionally injected
-    for ``_derive_status``; when absent, all instances are 运行.
-    """
-
-    __slots__ = ("_table_svc", "_is_node_expired")
+    __slots__ = ("_table_svc", "_is_node_expired", "_expired_nodes_provider")
 
     def __init__(self, table_svc: RegistryTableService) -> None:
         self._table_svc = table_svc
         self._is_node_expired: Optional[NodeExpiredCheck] = None
+        # Optional provider returning a set of expired node IPs (read-only)
+        # for SQL push-down. Set by set_heartbeat_service.
+        self._expired_nodes_provider: Optional[Callable[[], set]] = None
 
     # ------------------------------------------------------------------
-    # Heartbeat injection (P0-5 will wire the real callback)
+    # Heartbeat injection
     # ------------------------------------------------------------------
 
     def set_heartbeat_check(self, callback: Optional[NodeExpiredCheck]) -> None:
-        """Inject (or clear) the node-expiration callback for _derive_status.
-
-        ``callback(node_ip) -> bool``: True if the node is expired/unhealthy.
-        ``None`` resets to the default (all healthy → 运行).
-        """
         self._is_node_expired = callback
 
     def set_heartbeat_service(self, hb) -> None:
-        """Inject (or clear) a HeartbeatManager for status derivation.
-
-        Convenience wrapper around ``set_heartbeat_check``: wires
-        ``hb.is_expired`` as the node-expiration callback. Passing ``None``
-        clears the callback (all instances -> 运行). This is the injection
-        point called by backend startup in appliance mode.
-        """
+        """Inject (or clear) a HeartbeatManager for status derivation."""
         if hb is None:
             self.set_heartbeat_check(None)
+            self._expired_nodes_provider = None
         else:
             self.set_heartbeat_check(hb.is_expired)
+            self._expired_nodes_provider = hb.expired_nodes
 
     # ------------------------------------------------------------------
-    # register_instance (idempotent upsert)
+    # register_instance
     # ------------------------------------------------------------------
 
     def register_instance(self, entry: Dict[str, Any]) -> Dict[str, Any]:
-        """Upsert an instance by ``service_id``.
-
-        On re-register: preserves ``created_at`` from the existing row,
-        refreshes ``last_active_at``, and overwrites node/address. All
-        promoted columns (kind/framework/framework_version/node/user) are
-        refreshed from the provided entry.
-        """
         self._validate_entry(entry)
 
         sid = entry["service_id"]
         now = now_iso()
 
-        # Preserve created_at on re-register (data is overwritten on upsert).
         existing = self._table_svc.query(
             INSTANCE_REGISTRY, {"service_id": sid}
         )
@@ -130,20 +114,12 @@ class InstanceService:
         return self._to_entry(stored)
 
     # ------------------------------------------------------------------
-    # update_instance (partial update: node / address)
+    # update_instance
     # ------------------------------------------------------------------
 
     def update_instance(
         self, service_id: str, fields: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Partially update an instance's node and/or address.
-
-        ``address`` lives in the ``data`` JSON, so it is merged into the
-        existing data dict before patching. ``last_active_at`` is refreshed
-        whenever ``address`` changes (migration = activity).
-
-        Raises ``InstanceNotFoundError`` if the instance does not exist.
-        """
         has_node = fields.get("node") is not None
         has_address = fields.get("address") is not None
         if not has_node and not has_address:
@@ -175,15 +151,10 @@ class InstanceService:
         return self._to_entry(updated)
 
     # ------------------------------------------------------------------
-    # deregister_instance (idempotent delete)
+    # deregister_instance
     # ------------------------------------------------------------------
 
     def deregister_instance(self, service_id: str) -> Dict[str, Any]:
-        """Delete an instance by ``service_id``. Idempotent.
-
-        Returns ``{service_id, deleted}`` where ``deleted`` is True if a
-        row was removed, False if it was already absent.
-        """
         deleted = self._table_svc.deregister(INSTANCE_REGISTRY, service_id)
         logger.info(
             "deregister_instance %s (deleted=%s)", service_id, deleted
@@ -191,51 +162,72 @@ class InstanceService:
         return {"service_id": service_id, "deleted": deleted}
 
     # ------------------------------------------------------------------
-    # list_instances (query + derive status)
+    # list_instances (V2: paginated + SQL push-down)
     # ------------------------------------------------------------------
 
     def list_instances(
         self,
         filter: Optional[Dict[str, Any]] = None,
         include_unhealthy: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """Query instances with optional equality filters on promoted columns.
+        size: int = -1,
+        page: int = 1,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Query instances with optional filters, pagination, and status.
 
-        When ``include_unhealthy`` is False (default), instances whose
-        derived status is 异常 are excluded from the result.
+        When ``include_unhealthy=False`` (default), unhealthy instances are
+        excluded via SQL push-down: ``node NOT IN (expired_nodes())``.
+        This ensures ``LIMIT/OFFSET`` and ``X-Total-Count`` are correct.
+
+        Returns ``(entries, total)`` — total is the filtered count before
+        pagination.
         """
-        rows = self._table_svc.query(INSTANCE_REGISTRY, filter)
-        result: List[Dict[str, Any]] = []
-        for row in rows:
-            entry = self._to_entry(row)
-            if not include_unhealthy and entry["status"] == "异常":
-                continue
-            result.append(entry)
-        return result
+        extra_where = ""
+        extra_args: tuple = ()
+        if not include_unhealthy and self._expired_nodes_provider is not None:
+            dead = self._expired_nodes_provider()
+            if dead:
+                dead_list = sorted(dead)
+                placeholders = ",".join("?" for _ in dead_list)
+                extra_where = f"node NOT IN ({placeholders})"
+                extra_args = tuple(dead_list)
+
+        offset = max(0, (page - 1) * size) if size > 0 else 0
+        rows, total = self._table_svc.query_paginated(
+            INSTANCE_REGISTRY,
+            filter=filter or None,
+            extra_where=extra_where,
+            extra_args=extra_args,
+            order_by=_INSTANCE_ORDER,
+            limit=size if size > 0 else -1,
+            offset=offset,
+        )
+        entries = [self._to_entry(r) for r in rows]
+
+        # Fallback: when _expired_nodes_provider is not set but
+        # _is_node_expired is (e.g. tests using set_heartbeat_check
+        # directly), filter unhealthy entries in memory.
+        if (not include_unhealthy
+                and self._expired_nodes_provider is None
+                and self._is_node_expired is not None):
+            entries = [e for e in entries if e["status"] != "异常"]
+            total = len(entries) if size <= 0 else total
+        return entries, total
 
     # ------------------------------------------------------------------
-    # expire_node (heartbeat sweeper callback)
+    # expire_node
     # ------------------------------------------------------------------
 
     def expire_node(self, node: str) -> None:
-        """Delete all instances on a node. Called by the heartbeat sweeper
-        when a node exceeds the grace period. Idempotent.
-        """
         rows = self._table_svc.query(INSTANCE_REGISTRY, {"node": node})
         for row in rows:
             self._table_svc.deregister(INSTANCE_REGISTRY, row["service_id"])
         logger.info("expire_node %s (removed=%d)", node, len(rows))
 
     # ------------------------------------------------------------------
-    # distinct_nodes (restart recovery for P0-5)
+    # distinct_nodes
     # ------------------------------------------------------------------
 
     def distinct_nodes(self) -> List[str]:
-        """Return sorted distinct node IPs that have registered instances.
-
-        Used by P0-5 ``recover_from_persisted(distinct_nodes)`` to rebuild
-        per-node heartbeat leases after a registry restart.
-        """
         rows = self._table_svc.query(INSTANCE_REGISTRY)
         return sorted({r["node"] for r in rows if r.get("node")})
 
@@ -244,18 +236,12 @@ class InstanceService:
     # ------------------------------------------------------------------
 
     def _derive_status(self, node: str) -> str:
-        """Derive instance status from the node heartbeat.
-
-        ``异常`` if the injected heartbeat callback says the node is
-        expired; ``运行`` otherwise (including when no callback is set).
-        """
         if self._is_node_expired is not None and self._is_node_expired(node):
             return "异常"
         return "运行"
 
     @staticmethod
     def _validate_entry(entry: Dict[str, Any]) -> None:
-        """Validate required fields and kind enum."""
         for field in _REQUIRED_FIELDS:
             val = entry.get(field)
             if val is None or val == "":
@@ -268,9 +254,6 @@ class InstanceService:
             )
 
     def _to_entry(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert a DB row (merged entry dict) into an InstanceEntry dict
-        with derived status.
-        """
         data = row.get("data", {}) or {}
         node = row.get("node", "")
         return {

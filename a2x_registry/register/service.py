@@ -1639,7 +1639,7 @@ _VALID_KINDS = frozenset(("service", "image", "instance"))
 # Everything else in an entry goes into the `data` JSON blob.
 _KIND_PROMOTED: Dict[str, tuple] = {
     "service": ("type", "source", "name", "description"),
-    "image": ("framework", "framework_version", "is_default"),
+    "image": ("framework", "framework_version", "version_key", "is_default", "uploaded_by"),
     "instance": ("kind", "framework", "framework_version", "node", "user"),
 }
 
@@ -1659,10 +1659,12 @@ _KIND_LAYOUT: Dict[str, Dict[str, tuple]] = {
     },
     "image": {
         "insert_cols": (
-            "service_id", "framework", "framework_version", "is_default", "data",
+            "service_id", "framework", "framework_version",
+            "version_key", "is_default", "uploaded_by", "data",
         ),
         "update_cols": (
-            "framework", "framework_version", "is_default", "data",
+            "framework", "framework_version",
+            "version_key", "is_default", "uploaded_by", "data",
         ),
     },
     "instance": {
@@ -1901,7 +1903,79 @@ class RegistryTableService:
         if kind is None:
             return []
 
-        sql = f"SELECT * FROM {kind} WHERE registry=?"
+        where, args = self._build_where(name, kind, filter)
+        sql = f"SELECT * FROM {kind} WHERE {where}"
+        rows = self._backend.query(sql, tuple(args))
+        return [_row_to_entry(r) for r in rows]
+
+    def query_paginated(
+        self,
+        name: str,
+        filter: Optional[dict] = None,
+        extra_where: str = "",
+        extra_args: tuple = (),
+        order_by: str = "",
+        limit: int = -1,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Return (rows, total) with optional ordering and pagination.
+
+        ``order_by`` is a raw SQL ORDER BY clause (columns are from the
+        kind's promoted set or service_id, validated by the caller).
+
+        ``extra_where`` / ``extra_args`` are appended as raw SQL and
+        arguments after the filter clauses. Used for ``node NOT IN (...)``
+        push-down in instance unhealthy filtering.
+
+        When ``limit > 0``, ``LIMIT/OFFSET`` is appended and ``total`` is
+        the count of all rows matching the filter (before pagination).
+        When ``limit <= 0``, all rows are returned and ``total`` equals
+        ``len(rows)`` (no separate COUNT query).
+        """
+        kind = self.get_kind(name)
+        if kind is None:
+            return [], 0
+
+        where, args = self._build_where(name, kind, filter)
+        if extra_where:
+            where += f" AND {extra_where}"
+            args.extend(extra_args)
+
+        sql = f"SELECT * FROM {kind} WHERE {where}"
+        count_args = tuple(args)
+        if order_by:
+            sql += f" ORDER BY {order_by}"
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            args = args + [limit, offset]
+
+        rows = self._backend.query(sql, tuple(args))
+        entries = [_row_to_entry(r) for r in rows]
+
+        if limit > 0:
+            total = self._count_where(kind, where, count_args)
+        else:
+            total = len(entries)
+        return entries, total
+
+    def _count_where(
+        self, kind: str, where: str, args: tuple,
+    ) -> int:
+        """Return the count of rows matching the given WHERE clause."""
+        rows = self._backend.query(
+            f"SELECT COUNT(*) AS c FROM {kind} WHERE {where}",
+            args,
+        )
+        return rows[0]["c"] if rows else 0
+
+    def _build_where(
+        self, name: str, kind: str, filter: Optional[dict] = None,
+    ) -> tuple[str, list]:
+        """Build a WHERE clause string and args list from a filter dict.
+
+        Returns ``("registry=? AND col1=? ...", [name, val1, ...])``.
+        """
+        parts = ["registry=?"]
         args: list = [name]
         if filter:
             allowed = set(_KIND_PROMOTED[kind]) | {"service_id"}
@@ -1910,11 +1984,9 @@ class RegistryTableService:
                     raise ValidationError(
                         f"cannot filter on unknown column: {col!r}"
                     )
-                sql += f" AND {_quote_col(col)}=?"
+                parts.append(f"{_quote_col(col)}=?")
                 args.append(val)
-
-        rows = self._backend.query(sql, tuple(args))
-        return [_row_to_entry(r) for r in rows]
+        return " AND ".join(parts), args
 
     # ------------------------------------------------------------------
     # internal fetch

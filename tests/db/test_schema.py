@@ -74,16 +74,16 @@ def test_service_columns(appliance_conn):
 
 
 def test_image_columns(appliance_conn):
-    """image 主键 (registry, service_id)，framework/version 热，is_default 默认 0。"""
+    """image 主键 (registry, service_id)，framework/version/version_key/is_default 热，uploaded_by 热，is_default 默认 0。"""
     cols = _columns(appliance_conn, "image")
     assert set(cols) == {
         "registry", "service_id", "framework", "framework_version",
-        "is_default", "data",
+        "version_key", "is_default", "uploaded_by", "data",
     }
     assert cols["registry"]["pk"] == 1
     assert cols["service_id"]["pk"] == 2
     for nn in ("registry", "service_id", "framework",
-               "framework_version", "is_default", "data"):
+               "framework_version", "version_key", "is_default", "data"):
         assert cols[nn]["notnull"] == 1, f"{nn} 应 NOT NULL"
     # is_default 默认值 0
     assert cols["is_default"]["dflt_value"] == "0"

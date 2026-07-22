@@ -42,10 +42,14 @@ def test_init_schema_creates_six_indexes(tmp_path):
                 "AND name NOT LIKE 'sqlite_autoindex%'"
             )
         }
+        # V2 schema: image adds idx_image_by + idx_image_order,
+        # instance adds idx_instance_order (2 new indexes).
         assert indexes == {
             "idx_service_type",
             "idx_image_fw", "idx_image_fw_ver",
+            "idx_image_by", "idx_image_order",
             "idx_instance_node", "idx_instance_fw", "idx_instance_user",
+            "idx_instance_order",
         }
     finally:
         conn.close()
@@ -73,8 +77,8 @@ def test_registry_meta_routes_name_to_kind(fresh_backend):
 
     svc = RegistryTableService(fresh_backend)
     svc.create_registry("default", "service")
-    svc.create_registry("镜像注册表", "image")
-    svc.create_registry("实例注册表", "instance")
+    svc.create_registry("images", "image")
+    svc.create_registry("instances", "instance")
 
     rows = fresh_backend.query(
         "SELECT registry, kind FROM registry_meta ORDER BY registry"
@@ -82,8 +86,8 @@ def test_registry_meta_routes_name_to_kind(fresh_backend):
     kinds = {r["registry"]: r["kind"] for r in rows}
     assert kinds == {
         "default": "service",
-        "镜像注册表": "image",
-        "实例注册表": "instance",
+        "images": "image",
+        "instances": "instance",
     }
 
 
@@ -91,8 +95,8 @@ def test_registry_meta_create_then_query_kind(fresh_backend):
     from a2x_registry.register.service import RegistryTableService
 
     svc = RegistryTableService(fresh_backend)
-    svc.create_registry("镜像注册表", "image")
-    assert svc.get_kind("镜像注册表") == "image"
+    svc.create_registry("images", "image")
+    assert svc.get_kind("images") == "image"
 
 
 def test_registry_meta_unknown_name_returns_none(fresh_backend):
@@ -161,8 +165,8 @@ def test_generic_mode_only_service_registry_needed(fresh_backend):
     svc.create_registry("default", "service")  # 通用模式仅此
     assert svc.list_registries() == {"default": "service"}
     # image / instance 物理表已存在但无注册表登记
-    assert svc.get_kind("镜像注册表") is None
-    assert svc.get_kind("实例注册表") is None
+    assert svc.get_kind("images") is None
+    assert svc.get_kind("instances") is None
 
 
 def test_appliance_mode_creates_three_registries(fresh_backend):
@@ -171,6 +175,6 @@ def test_appliance_mode_creates_three_registries(fresh_backend):
 
     svc = RegistryTableService(fresh_backend)
     svc.create_registry("default", "service")
-    svc.create_registry("镜像注册表", "image")
-    svc.create_registry("实例注册表", "instance")
+    svc.create_registry("images", "image")
+    svc.create_registry("instances", "instance")
     assert len(svc.list_registries()) == 3

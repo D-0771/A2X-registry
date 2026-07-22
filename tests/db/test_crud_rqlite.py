@@ -43,15 +43,15 @@ def test_create_registry_routes_by_kind(rqlite_backend):
     """不同 kind 的注册表各行其道：service / image / instance。"""
     sql = "INSERT OR IGNORE INTO registry_meta(registry, kind) VALUES (?, ?)"
     for name, kind in [("default", "service"),
-                       ("镜像注册表", "image"),
-                       ("实例注册表", "instance")]:
+                       ("images", "image"),
+                       ("instances", "instance")]:
         rqlite_backend.execute(sql, (name, kind))
 
     rows = rqlite_backend.query(
         "SELECT registry, kind FROM registry_meta ORDER BY registry"
     )
     kinds = {r["registry"]: r["kind"] for r in rows}
-    assert kinds == {"default": "service", "镜像注册表": "image", "实例注册表": "instance"}
+    assert kinds == {"default": "service", "images": "image", "instances": "instance"}
 
 
 # ── register：幂等 upsert ────────────────────────────────────

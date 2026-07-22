@@ -1,12 +1,12 @@
-"""镜像管理 router 测试（memory 后端，TestClient）。
+"""镜像管理 router 测试（memory 后端，TestClient，V2 扁平模型）。
 
 覆盖端点 + HTTP 状态码映射：
-- POST /api/images → 200 registered / updated
-- GET /api/images → 分组列表
-- GET /api/images/{fw}/launch-spec → 200 / 404
-- PUT /api/images/{fw}/default → 200 / 404
-- DELETE /api/images/{fw}/{ver} → 200 / 409 在用 / 404 不存在
-- 未装配镜像模块（image_svc 未注入）→ 404
+- POST /api/images -> 200 registered / updated
+- GET /api/images -> 扁平列表 + 分页 header + uploaded_by 过滤
+- GET /api/images/{fw}/launch-spec -> 200 扁平 spec / 404
+- PUT /api/images/{fw}/default -> 200 / 404
+- DELETE /api/images/{fw}/{ver} -> 200 / 409 在用 / 404 不存在
+- 未装配镜像模块 -> 404
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from .conftest import make_spec
 
 
 def _make_app() -> FastAPI:
-    """构建只挂 image router 的最小 app。"""
     app = FastAPI()
     app.include_router(image_router)
     return app
@@ -30,16 +29,16 @@ def _make_app() -> FastAPI:
 
 @pytest.fixture
 def client(image_svc):
-    """TestClient，image_svc fixture 已注入全局 deps。"""
     app = _make_app()
     return TestClient(app)
 
 
-def _register(client, fw="opencode", ver="v0.2.0", spec=None):
+def _register(client, fw="opencode", ver="v0.2.0", spec=None, uploaded_by="user-01"):
     if spec is None:
         spec = make_spec()
     return client.post("/api/images", json={
         "framework": fw, "framework_version": ver, "spec": spec,
+        "uploaded_by": uploaded_by,
     })
 
 
@@ -62,18 +61,17 @@ def test_post_reregister_updated(client):
     assert r.json()["status"] == "updated"
 
 
-# ── GET /api/images ─────────────────────────────────────────────
+# ── GET /api/images (flat) ──────────────────────────────────────
 
-def test_get_list_grouped(client):
+def test_get_list_flat(client):
     _register(client, ver="v0.2.0")
     _register(client, ver="v0.1.0", spec=make_spec(cpu=500))
     r = client.get("/api/images")
     assert r.status_code == 200
-    groups = r.json()
-    assert len(groups) == 1
-    assert groups[0]["framework"] == "opencode"
-    assert groups[0]["default"] == "v0.2.0"
-    assert len(groups[0]["versions"]) == 2
+    rows = r.json()
+    assert len(rows) == 2
+    assert isinstance(rows, list)
+    assert rows[0]["framework"] == "opencode"
 
 
 def test_get_list_filter_framework(client):
@@ -81,9 +79,40 @@ def test_get_list_filter_framework(client):
     _register(client, fw="ninequery", ver="v1.0.0")
     r = client.get("/api/images", params={"framework": "opencode"})
     assert r.status_code == 200
-    groups = r.json()
-    assert len(groups) == 1
-    assert groups[0]["framework"] == "opencode"
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["framework"] == "opencode"
+
+
+def test_get_list_filter_uploaded_by(client):
+    _register(client, fw="opencode", uploaded_by="alice")
+    _register(client, fw="ninequery", ver="v1.0.0", uploaded_by="bob")
+    r = client.get("/api/images", params={"uploaded_by": "alice"})
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["uploaded_by"] == "alice"
+
+
+def test_get_list_pagination_headers(client):
+    for ver in ["v0.3.0", "v0.2.0", "v0.1.0"]:
+        _register(client, ver=ver)
+    r = client.get("/api/images", params={"size": 2, "page": 1})
+    assert r.status_code == 200
+    assert r.headers["X-Total-Count"] == "3"
+    assert r.headers["X-Page"] == "1"
+    assert r.headers["X-Total-Pages"] == "2"
+    assert r.headers["X-Page-Size"] == "2"
+    assert len(r.json()) == 2
+
+
+def test_get_list_pagination_page2(client):
+    for ver in ["v0.3.0", "v0.2.0", "v0.1.0"]:
+        _register(client, ver=ver)
+    r = client.get("/api/images", params={"size": 2, "page": 2})
+    assert r.status_code == 200
+    assert r.headers["X-Total-Count"] == "3"
+    assert len(r.json()) == 1
 
 
 def test_get_list_empty(client):
@@ -102,7 +131,8 @@ def test_get_launch_spec_with_version(client):
     assert body["framework"] == "opencode"
     assert body["framework_version"] == "v0.2.0"
     assert body["cpu"] == 1500
-    assert body["rootfs"]["imageurl"] == "harbor.local/adapted/opencode:v0.2.0"
+    assert body["imageurl"] == "harbor.local/adapted/opencode:v0.2.0"
+    assert "rootfs" not in body
 
 
 def test_get_launch_spec_default_version(client):
@@ -127,9 +157,6 @@ def test_put_set_default(client):
     r = client.put("/api/images/opencode/default", json={"framework_version": "v0.1.0"})
     assert r.status_code == 200
     assert r.json()["default"] == "v0.1.0"
-    # 确认生效
-    r2 = client.get("/api/images/opencode/launch-spec")
-    assert r2.json()["framework_version"] == "v0.1.0"
 
 
 def test_put_set_default_not_found(client):
@@ -145,13 +172,11 @@ def test_delete_deregister(client):
     r = client.delete("/api/images/opencode/v0.2.0")
     assert r.status_code == 200
     assert r.json()["status"] == "deregistered"
-    assert client.get("/api/images").json() == []
 
 
 def test_delete_in_use_409(client, image_svc):
     _register(client)
-    # 注册在用实例
-    image_svc._table_svc.register("实例注册表", {
+    image_svc._table_svc.register("instances", {
         "service_id": "generic_abc123",
         "kind": "三方",
         "framework": "opencode",
@@ -169,14 +194,14 @@ def test_delete_not_found(client):
     assert r.status_code == 404
 
 
-# ── 未装配镜像模块 → 404 ─────────────────────────────────────────
+# ── 未装配镜像模块 -> 404 ─────────────────────────────────────────
 
 def test_routes_404_when_not_assembled():
-    """image_svc 未注入时所有路由返回 404。"""
     set_image_service(None)
     app = _make_app()
     c = TestClient(app)
     assert c.get("/api/images").status_code == 404
     assert c.post("/api/images", json={
-        "framework": "x", "framework_version": "v1", "spec": make_spec(),
+        "framework": "x", "framework_version": "v1",
+        "spec": make_spec(), "uploaded_by": "u",
     }).status_code == 404

@@ -7,9 +7,9 @@ assembles the SQL layer and creates the named registries according to
 - Default mode (env unset / empty): only the ``service`` kind registry is
   created (named ``default``) -- the A2X backward-compat surface. Image /
   instance tables exist in schema (init_schema creates all 4 tables) but
-  no ``镜像注册表`` / ``实例注册表`` row is registered in ``registry_meta``.
+  no ``images`` / ``instances`` row is registered in ``registry_meta``.
 - Appliance mode (``A2X_REGISTRY_MODE=appliance``): additionally creates
-  ``镜像注册表`` (kind=image) and ``实例注册表`` (kind=instance).
+  ``images`` (kind=image) and ``instances`` (kind=instance).
 
 The assembled ``RegistryTableService`` is stashed on ``warmup_state`` under
 a private key so image / instance module assembly (P0-3 / P0-4 delivery
@@ -91,8 +91,8 @@ def test_warmup_default_mode_creates_only_service_registry(monkeypatch, tmp_path
     regs = ts.list_registries()
     assert "default" in regs and regs["default"] == "service"
     # Appliance-only registries must NOT be registered in default mode.
-    assert "镜像注册表" not in regs
-    assert "实例注册表" not in regs
+    assert "images" not in regs
+    assert "instances" not in regs
 
 
 def test_warmup_appliance_mode_creates_image_instance_registries(monkeypatch, tmp_path):
@@ -112,8 +112,8 @@ def test_warmup_appliance_mode_creates_image_instance_registries(monkeypatch, tm
     ts = startup.warmup_state["_table_service"]
     regs = ts.list_registries()
     assert regs.get("default") == "service"
-    assert regs.get("镜像注册表") == "image"
-    assert regs.get("实例注册表") == "instance"
+    assert regs.get("images") == "image"
+    assert regs.get("instances") == "instance"
 
 
 def test_warmup_appliance_mode_assembles_image_service(monkeypatch, tmp_path):

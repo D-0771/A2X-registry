@@ -73,7 +73,9 @@ def test_init_schema_creates_four_tables(tmp_path):
         )}
         assert indexes == {
             "idx_service_type", "idx_image_fw", "idx_image_fw_ver",
+            "idx_image_by", "idx_image_order",
             "idx_instance_node", "idx_instance_fw", "idx_instance_user",
+            "idx_instance_order",
         }
     finally:
         conn.close()

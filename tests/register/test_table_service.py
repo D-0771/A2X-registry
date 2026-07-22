@@ -21,8 +21,8 @@ from a2x_registry.register.errors import (
 
 
 SERVICE_REG = "default"
-IMAGE_REG = "镜像注册表"
-INSTANCE_REG = "实例注册表"
+IMAGE_REG = "images"
+INSTANCE_REG = "instances"
 
 NOW = "2026-07-14T08:00:00Z"
 
@@ -125,13 +125,17 @@ class TestRegisterService:
 
 class TestRegisterImage:
     def _entry(self, fw, ver, **overrides):
+        # V2: image rows require version_key (NOT NULL) and uploaded_by.
+        from a2x_registry.image.version_key import version_key
         base = {
             "service_id": image_sid(fw, ver),
             "framework": fw,
             "framework_version": ver,
+            "version_key": version_key(ver),
             "is_default": 0,
+            "uploaded_by": "tester",
             "data": {
-                "rootfs": {"type": "docker", "imageurl": f"registry.local/{fw}:{ver}"},
+                "imageurl": f"registry.local/{fw}:{ver}",
                 "cpu": 1,
                 "memory": "512Mi",
                 "ports": [8080],
@@ -415,7 +419,9 @@ class TestKindIsolation:
                 "service_id": "shared_id",
                 "framework": "fw",
                 "framework_version": "1.0",
+                "version_key": "00000.00001.00000~",
                 "is_default": 1,
+                "uploaded_by": "tester",
                 "data": {"k": "image"},
             },
         )

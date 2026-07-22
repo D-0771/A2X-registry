@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-INS_REG = "实例注册表"
+INS_REG = "instances"
 NOW = "2026-07-13T10:00:00Z"
 
 

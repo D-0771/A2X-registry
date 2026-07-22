@@ -106,8 +106,8 @@ def run_warmup() -> None:
             mode = os.environ.get("A2X_REGISTRY_MODE", "").strip()
             table_svc.create_registry("default", "service")
             if mode == "appliance":
-                table_svc.create_registry("镜像注册表", "image")
-                table_svc.create_registry("实例注册表", "instance")
+                table_svc.create_registry("images", "image")
+                table_svc.create_registry("instances", "instance")
 
             warmup_state["_table_service"] = table_svc
             logger.info(

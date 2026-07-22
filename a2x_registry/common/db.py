@@ -60,12 +60,16 @@ CREATE TABLE IF NOT EXISTS image (
   service_id        TEXT NOT NULL,               -- image_sid(framework, framework_version)
   framework         TEXT NOT NULL,               -- hot: lookup by framework
   framework_version TEXT NOT NULL,               -- hot: lookup by version
-  is_default        INTEGER NOT NULL DEFAULT 0,  -- default-version flag for a framework (exactly one row per framework = 1)
-  data              TEXT NOT NULL,               -- JSON {rootfs, cpu, memory, ports, env, image_module_version}
+  version_key       TEXT NOT NULL,               -- sort: normalized semver key computed at registration (see image/version_key.py)
+  is_default        INTEGER NOT NULL DEFAULT 0,  -- default-version flag for a framework (exactly one row per framework = 1); not part of sort order
+  uploaded_by       TEXT,                        -- hot: filter by uploader; pre-seeded entries are 'system'
+  data              TEXT NOT NULL,               -- JSON flat (no rootfs wrapper): {imageurl, workdir, mounts, cpu, memory, ports, env, image_module_version, created_at}
   PRIMARY KEY (registry, service_id)
 );
 CREATE INDEX IF NOT EXISTS idx_image_fw     ON image(registry, framework);
 CREATE INDEX IF NOT EXISTS idx_image_fw_ver ON image(registry, framework, framework_version);
+CREATE INDEX IF NOT EXISTS idx_image_by     ON image(registry, uploaded_by);
+CREATE INDEX IF NOT EXISTS idx_image_order  ON image(registry, framework, version_key DESC);
 
 -- Instance (status is not persisted; derived from node heartbeat at query time)
 CREATE TABLE IF NOT EXISTS instance (
@@ -82,6 +86,7 @@ CREATE TABLE IF NOT EXISTS instance (
 CREATE INDEX IF NOT EXISTS idx_instance_node ON instance(registry, node);
 CREATE INDEX IF NOT EXISTS idx_instance_fw   ON instance(registry, framework, framework_version);
 CREATE INDEX IF NOT EXISTS idx_instance_user ON instance(registry, "user");
+CREATE INDEX IF NOT EXISTS idx_instance_order ON instance(registry, framework, "user", service_id);
 """
 
 

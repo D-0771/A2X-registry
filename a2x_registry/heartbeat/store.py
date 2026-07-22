@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Iterable, List, Optional, Tuple
 
-from a2x_registry.common.lease import Lease, LeaseTable
+from a2x_registry.common.lease import Lease, LeaseState, LeaseTable
 
 from .errors import (
     HeartbeatNotSupportedError,
@@ -342,6 +342,16 @@ class NodeHeartbeatStore:
     def list_nodes(self) -> List[Tuple[str, Lease]]:
         """All ``(node, lease)`` pairs - for tests / debug."""
         return self._table.items()
+
+    def expired_nodes(self) -> set:
+        """Return the set of node IPs that are currently UNHEALTHY.
+
+        Read-only: does not modify leases. Used by instance query to
+        push ``node NOT IN (...)`` into SQL when ``include_unhealthy=False``,
+        so filtering and pagination both happen in the database.
+        """
+        return {node for node, lease in self._table.items()
+                if lease.state == LeaseState.UNHEALTHY}
 
     # ── sweep ───────────────────────────────────────────────────
 
