@@ -24,15 +24,13 @@
 以下命令在代码仓根目录执行。
 
 ```bash
+uv sync
 source .venv/bin/activate
-pyinstaller --onefile --name a2x-registry --collect-submodules a2x_registry --hidden-import uvicorn.logging --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on a2x_registry/backend/__main__.py --optimize=2
-cp dist/a2x-registry build_test/
-
 # 加载环境变量
 source ./build_test/registry.env
 
 # 启动注册中心
-./build_test/a2x-registry
+a2x-registry
 ```
 
 ---
@@ -51,11 +49,8 @@ curl -X POST http://127.0.0.1:8000/api/images \
     "framework": "opencode",
     "framework_version": "v0.2.0",
     "spec": {
-      "rootfs": {
-        "type": "image",
-        "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
-        "workdir": "/app"
-      },
+      "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
+      "workdir": "/app",
       "cpu": 1000,
       "memory": 2048,
       "ports": [{"port": 8080, "protocol": "tcp"}],
@@ -68,26 +63,26 @@ curl -X POST http://127.0.0.1:8000/api/images \
 
 **预期响应** `200`：
 ```json
-{"framework": "opencode", "framework_version": "v0.2.0", "status": "registered"}
+{"framework": "opencode", "framework_version": "v0.2.0", "is_default": true, "status": "registered"}
 ```
 
 **效果**：按 `framework + framework_version` 幂等 upsert；该 framework 首次注册时自动置为默认版本。
-**错误**：`spec.rootfs.imageurl` 缺失 → `400 {"detail":"spec.rootfs.imageurl 缺失"}`。
+**错误**：`spec.imageurl` 缺失 -> `422 {"detail":[{"type":"missing","loc":["body","spec","imageurl"],"msg":"Field required"}]}`。
 
 **数据库验证**：
 ```bash
-# 1. image 表新增一行（registry='images'），data JSON 含 imageurl/cpu
+# 1. image 表新增一行（registry='images'），data JSON 扁平含 imageurl/cpu
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework, framework_version, is_default,
-          json_extract(data,'\$.rootfs.imageurl') AS imageurl,
-          json_extract(data,'\$.cpu') AS cpu
+          json_extract(data,'$.imageurl') AS imageurl,
+          json_extract(data,'$.cpu') AS cpu
    FROM image WHERE registry='images' AND framework='opencode';"
 # 预期：opencode|v0.2.0|1|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000
 
 # 2. registry_meta 已登记 'images'（启动期 create_registry）
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT registry, kind FROM registry_meta WHERE registry='images';"
-# 预期：镜像注册表|image
+# 预期：images|image
 ```
 
 ### 1.2 查询镜像（按 framework 过滤）
