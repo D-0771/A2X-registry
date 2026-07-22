@@ -10,7 +10,7 @@ Listen address comes from ``registry.env`` (env vars), NOT a CLI flag:
     A2X_REGISTRY_MODE        "" (generic) | "appliance"
     A2X_REGISTRY_BIND        empty -> 127.0.0.1 ; concrete IP ; 0.0.0.0 forbidden
     A2X_REGISTRY_PORT        empty -> 8000
-    A2X_REGISTRY_HA_MEMBERS  must be empty in 730 (single-node SQLite)
+    A2X_REGISTRY_HA_MEMBERS  must be empty (single-node SQLite only)
     A2X_REGISTRY_DB_KIND     empty -> sqlite | "memory" (debug) | "rqlite"
 
 Auth admin subcommands (no server needed):
@@ -51,11 +51,11 @@ class RuntimeConfig:
 
     - ``mode``: "" (generic, service table only) or "appliance" (also
       creates image / instance registries at startup).
-    - ``bind``: concrete listen IP. Never "0.0.0.0" (security: 730 binds
-      to a specific interface or loopback).
+    - ``bind``: concrete listen IP. Never "0.0.0.0" (binds
+      to a specific interface or loopback only).
     - ``port``: listen port.
-    - ``ha_members``: tuple of peer addresses; must be empty in 730
-      (single-node SQLite). Non-empty indicates a later rqlite release.
+    - ``ha_members``: tuple of peer addresses; must be empty
+      (single-node SQLite only). Non-empty indicates a later rqlite release.
     - ``db_kind``: storage backend kind — ``sqlite`` (production single-node,
       file-persisted), ``memory`` (debug only, in-process, lost on exit),
       or ``rqlite`` (Raft-replicated cluster; endpoint/auth read in
@@ -73,17 +73,17 @@ def parse_runtime_config() -> RuntimeConfig:
     """Parse runtime config from environment variables.
 
     Raises ``ValueError`` on:
-      - unknown ``A2X_REGISTRY_MODE`` (only "" / "appliance" valid in 730)
+      - unknown ``A2X_REGISTRY_MODE`` (only "" / "appliance" valid)
       - ``A2X_REGISTRY_BIND=0.0.0.0`` (wildcard forbidden)
       - non-integer ``A2X_REGISTRY_PORT``
-      - non-empty ``A2X_REGISTRY_HA_MEMBERS`` (730 is single-node)
+      - non-empty ``A2X_REGISTRY_HA_MEMBERS`` (single-node only)
       - unknown ``A2X_REGISTRY_DB_KIND`` (only sqlite / memory / rqlite)
     """
     mode = os.environ.get(_ENV_MODE, "").strip()
     if mode not in _VALID_MODES:
         raise ValueError(
             f"unknown A2X_REGISTRY_MODE={mode!r}; "
-            f"730 accepts only '' (generic) or 'appliance'"
+            f"accepts only '' (generic) or 'appliance'"
         )
 
     bind = os.environ.get(_ENV_BIND, "").strip() or _DEFAULT_BIND
@@ -110,8 +110,8 @@ def parse_runtime_config() -> RuntimeConfig:
     ha_members = tuple(m.strip() for m in ha_raw.split(",") if m.strip())
     if ha_members:
         raise ValueError(
-            "A2X_REGISTRY_HA_MEMBERS is non-empty but 730 is single-node "
-            "SQLite; rqlite HA is a later release"
+            "A2X_REGISTRY_HA_MEMBERS is non-empty but current build is "
+            "single-node SQLite; rqlite HA is a later release"
         )
 
     db_kind = os.environ.get(_ENV_DB_KIND, "").strip() or "sqlite"

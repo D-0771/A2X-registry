@@ -56,7 +56,7 @@ def get_registry_service() -> RegistryService:
 async def _run(fn, *args):
     """Run a blocking function in the thread pool, mapping exceptions to HTTP errors.
 
-    Layered error contract (see docs/client_design.md §3.4):
+    Layered error contract:
       RegistryNotFoundError → 404   (business "resource doesn't exist")
       HeartbeatError        → 400 + structured body {code, min_ttl?, max_ttl?}
       ValueError            → 400   (validation / forbidden source)

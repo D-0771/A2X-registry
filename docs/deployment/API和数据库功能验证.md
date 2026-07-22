@@ -130,11 +130,22 @@ curl 'http://127.0.0.1:8000/api/images/opencode/launch-spec?version=v0.2.0'
 **预期响应** `200`：
 ```json
 {
-  "framework": "opencode", "framework_version": "v0.2.0",
-  "rootfs": {"type": "image", "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3"},
-  "cpu": 1000, "memory": 2048,
-  "ports": [{"port": 8080, "protocol": "tcp"}],
-  "env": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"}
+    "framework": "opencode",
+    "framework_version": "v0.2.0",
+    "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
+    "workdir": "/app",
+    "mounts": [],
+    "cpu": 1000,
+    "memory": 2048,
+    "ports": [
+        {
+            "port": 8080,
+            "protocol": "tcp"
+        }
+    ],
+    "env": {
+        "A2X_LLM_KEY": "${A2X_LLM_KEY}"
+    }
 }
 ```
 

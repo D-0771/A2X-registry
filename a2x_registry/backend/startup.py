@@ -83,7 +83,7 @@ def run_warmup() -> None:
     try:
         t0 = time.time()
 
-        # 0. SQL backend + RegistryTableService (P0-6a base assembly).
+        # 0. SQL backend + RegistryTableService (base assembly).
         #    image/instance services pick up ``_table_service`` from
         #    warmup_state instead of re-instantiating their own Backend.
         #    Failure here is fatal — without the SQL layer image/instance
@@ -102,7 +102,7 @@ def run_warmup() -> None:
             # Register the named registries per startup mode.
             # Generic mode: only the A2X backward-compat ``default``
             # service registry. Appliance mode: also create the image /
-            # instance registries so P0-3 / P0-4 routes have a target.
+            # instance registries so image/instance routes have a target.
             mode = os.environ.get("A2X_REGISTRY_MODE", "").strip()
             table_svc.create_registry("default", "service")
             if mode == "appliance":

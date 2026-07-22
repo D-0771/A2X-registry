@@ -5,7 +5,7 @@ JSON column); its fields are **flat** (no ``rootfs`` wrapper) in V2 --
 one row = one framework version, so the storage is flat and the API
 surface is flat.
 
-Fields correspond to the runtime sandbox (openyuanrong API §4.7):
+Fields correspond to the runtime sandbox:
 ``imageurl`` / ``workdir`` / ``mounts`` / ``cpu`` / ``memory`` /
 ``ports`` / ``env`` / ``image_module_version``.
 """

@@ -9,7 +9,7 @@ The gateway calls ``POST /api/instances`` after launching an instance;
 Persistence goes through ``RegistryTableService`` (SQL backend); this
 module does not hold a store/backend directly. ``status`` (运行 / 异常)
 is derived per-query from a node-heartbeat callback injected via
-``set_heartbeat_check`` (P0-5 wires the real callback).
+``set_heartbeat_check`` (heartbeat module wires the real callback).
 """
 
 from .errors import InstanceNotFoundError, InstanceValidationError

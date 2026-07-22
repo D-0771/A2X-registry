@@ -11,7 +11,7 @@ columns, so ``update_instance`` must merge ``address`` into the existing
 
 ``status`` (运行 / 异常) is never persisted — it is derived per-query
 from a node-heartbeat callback injected via ``set_heartbeat_check``.
-When no callback is injected (P0-4 standalone, or heartbeat module not
+When no callback is injected (standalone, or heartbeat module not
 loaded), all instances are considered healthy (运行).
 
 V2: ``list_instances`` supports pagination (``size``/``page``),
