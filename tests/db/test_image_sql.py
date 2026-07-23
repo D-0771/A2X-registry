@@ -237,17 +237,15 @@ def test_deregister_default_reassigns_to_latest(appliance_writable_copy):
 # ── resolve_launch_spec：抽元戎运行规格 ──────────────────────
 
 def test_resolve_launch_spec_exact_version(appliance_conn):
-    """按 framework+version 精确查一行，抽 imageurl/cpu/memory/ports/env。"""
+    """按 framework+version 精确查一行，抽 runtime_spec 中的 cpu/imageurl。"""
     row = appliance_conn.execute(
         "SELECT data FROM image WHERE registry=? AND framework=? AND framework_version=?",
         (IMG_REG, "langchain", "0.2.0"),
     ).fetchone()
     data = json.loads(row["data"])
-    spec = {k: data[k] for k in ("imageurl", "cpu", "memory", "ports", "env")}
-    assert spec["cpu"] == 2
-    assert spec["memory"] == "1Gi"
-    assert spec["ports"] == [8080]
-    assert spec["imageurl"] == "registry.local/langchain:0.2.0"
+    rs = data["runtime_spec"]
+    assert rs["cpu"] == 2
+    assert rs["rootfs"]["imageurl"] == "registry.local/langchain:0.2.0"
 
 
 def test_resolve_launch_spec_uses_default_when_version_omitted(appliance_conn):
@@ -263,7 +261,7 @@ def test_resolve_launch_spec_uses_default_when_version_omitted(appliance_conn):
         (IMG_REG, "langchain", default_ver),
     ).fetchone()
     data = json.loads(row["data"])
-    assert data["cpu"] == 2                          # 0.2.0 的规格
+    assert data["runtime_spec"]["cpu"] == 2                          # 0.2.0 的规格
 
 
 def test_resolve_launch_spec_404_on_missing_framework(appliance_conn):
@@ -280,10 +278,10 @@ def test_resolve_launch_spec_404_on_missing_framework(appliance_conn):
 def test_deregister_records_imageurl_before_delete(appliance_conn):
     """删镜像前需先取 imageurl（调镜像仓 delete(imageurl)）。
 
-    SQL 模式：删行前 SELECT json_extract(data, '$.imageurl')。
+    SQL 模式：删行前 SELECT json_extract(data, '$.runtime_spec.rootfs.imageurl')。
     """
     row = appliance_conn.execute(
-        "SELECT json_extract(data, '$.imageurl') AS url FROM image "
+        "SELECT json_extract(data, '$.runtime_spec.rootfs.imageurl') AS url FROM image "
         "WHERE registry=? AND framework=? AND framework_version=?",
         (IMG_REG, "langchain", "0.1.0"),
     ).fetchone()

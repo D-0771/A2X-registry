@@ -1,13 +1,9 @@
-"""Image management pydantic request / response models.
+"""Image management pydantic request / response models (V2.1).
 
-``spec`` is the launch spec (stored in the image registry table's ``data``
-JSON column); its fields are **flat** (no ``rootfs`` wrapper) in V2 --
-one row = one framework version, so the storage is flat and the API
-surface is flat.
-
-Fields correspond to the runtime sandbox:
-``imageurl`` / ``workdir`` / ``mounts`` / ``cpu`` / ``memory`` /
-``ports`` / ``env`` / ``image_module_version``.
+V2.1: ``runtime_spec`` is an opaque JSON object passthrough (no ``ImageSpec``
+typed structure). ``env_vars`` / ``workspace`` / ``mounts`` are top-level
+fields alongside ``runtime_spec``, aligning with the yuanrong
+``CreateAgentRequest`` layout.
 """
 
 from __future__ import annotations
@@ -17,35 +13,28 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-class ImageSpec(BaseModel):
-    """Launch spec (flat -- no ``rootfs`` wrapper in V2)."""
+# DEPRECATED: ImageSpec is no longer used by any endpoint.
+# runtime_spec is passed through as an opaque JSON object.
 
-    imageurl: str = Field(..., description="Adapted image URL in the repo")
-    workdir: Optional[str] = Field(None, description="Working directory")
+
+class RegisterImageRequest(BaseModel):
+    """``POST /api/images`` request body (V2.1)."""
+
+    framework: str = Field(..., description="Framework name, e.g. opencode")
+    framework_version: str = Field(..., description="Framework version, e.g. v0.2.0")
+    runtime_spec: Dict[str, Any] = Field(
+        ..., description="Opaque yuanrong RuntimeSpec JSON (passthrough)"
+    )
+    env_vars: Dict[str, str] = Field(
+        default_factory=dict, description="Environment variables"
+    )
+    workspace: Optional[str] = Field(None, description="Working directory")
     mounts: List[Dict[str, Any]] = Field(
         default_factory=list, description="Volume mounts"
-    )
-    cpu: int = Field(..., description="CPU quota in millicores (e.g. 1000 = 1 core)")
-    memory: int = Field(..., description="Memory quota in MB")
-    ports: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Port mapping list"
-    )
-    env: Dict[str, Any] = Field(
-        default_factory=dict, description="Environment variables"
     )
     image_module_version: Optional[str] = Field(
         None, description="Image-processing module version"
     )
-
-
-class RegisterImageRequest(BaseModel):
-    """``POST /api/images`` request body."""
-
-    framework: str = Field(..., description="Framework name, e.g. opencode")
-    framework_version: str = Field(
-        ..., description="Framework version, e.g. v0.2.0"
-    )
-    spec: ImageSpec
     uploaded_by: str = Field(..., description="Uploader identity")
 
 
@@ -65,38 +54,35 @@ class ImageRegisterResponse(BaseModel):
 class ImageEntry(BaseModel):
     """One flat row from the image registry (one framework version).
 
-    ``framework`` and ``is_default`` are per-row fields; there is no
-    framework-level grouping in the response. The frontend can group by
-    ``framework`` client-side if needed.
+    V2.1: ``runtime_spec`` is an opaque JSON passthrough.
     """
 
     framework: str
     framework_version: str
     is_default: bool
     image_module_version: Optional[str] = None
-    imageurl: str
-    workdir: Optional[str] = None
+    runtime_spec: Optional[Dict[str, Any]] = None
+    workspace: Optional[str] = None
     mounts: List[Dict[str, Any]] = Field(default_factory=list)
-    cpu: int
-    memory: int
-    ports: List[Dict[str, Any]] = Field(default_factory=list)
-    env: Dict[str, Any] = Field(default_factory=dict)
+    env_vars: Dict[str, str] = Field(default_factory=dict)
     uploaded_by: Optional[str] = None
     created_at: Optional[str] = None
 
 
 class LaunchSpecResponse(BaseModel):
-    """``GET /api/images/{framework}/launch-spec`` output (flat, no rootfs)."""
+    """``GET /api/images/{framework}/launch-spec`` output (V2.1).
+
+    ``runtime_spec`` is opaque JSON passthrough; ``env_vars`` / ``workspace``
+    / ``mounts`` are top-level fields.
+    """
 
     framework: str
     framework_version: str
-    imageurl: str
-    workdir: Optional[str] = None
+    runtime_spec: Optional[Dict[str, Any]] = None
+    env_vars: Dict[str, str] = Field(default_factory=dict)
+    workspace: Optional[str] = None
     mounts: List[Dict[str, Any]] = Field(default_factory=list)
-    cpu: int
-    memory: int
-    ports: List[Dict[str, Any]] = Field(default_factory=list)
-    env: Dict[str, Any] = Field(default_factory=dict)
+    image_module_version: Optional[str] = None
 
 
 class DeregisterResponse(BaseModel):

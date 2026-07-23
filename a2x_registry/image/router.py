@@ -62,7 +62,11 @@ async def register_image(req: RegisterImageRequest):
         result = svc.register_image(
             framework=req.framework,
             framework_version=req.framework_version,
-            spec=req.spec.model_dump(),
+            runtime_spec=req.runtime_spec,
+            env_vars=req.env_vars,
+            workspace=req.workspace,
+            mounts=req.mounts,
+            image_module_version=req.image_module_version,
             uploaded_by=req.uploaded_by,
         )
     except ValidationError as exc:

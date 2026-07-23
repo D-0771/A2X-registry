@@ -48,15 +48,22 @@ curl -X POST http://127.0.0.1:8000/api/images \
   -d '{
     "framework": "opencode",
     "framework_version": "v0.2.0",
-    "spec": {
-      "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
-      "workdir": "/app",
+    "runtime_spec": {
+      "runtime": "python3.11",
+      "sandbox_type": "docker",
+      "rootfs": {
+        "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
+        "user": "agentos",
+        "ports": ["tcp:8080"]
+      },
       "cpu": 1000,
       "memory": 2048,
-      "ports": [{"port": 8080, "protocol": "tcp"}],
-      "env": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
-      "image_module_version": "v1.3"
+      "ports": [{"port": 8080, "protocol": "tcp"}]
     },
+    "env_vars": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
+    "workspace": "/app",
+    "mounts": [{"source": "/data/agent", "target": "/data"}],
+    "image_module_version": "v1.3",
     "uploaded_by": "user-01"
   }'
 ```
@@ -66,16 +73,16 @@ curl -X POST http://127.0.0.1:8000/api/images \
 {"framework": "opencode", "framework_version": "v0.2.0", "is_default": true, "status": "registered"}
 ```
 
-**效果**：按 `framework + framework_version` 幂等 upsert；该 framework 首次注册时自动置为默认版本。
-**错误**：`spec.imageurl` 缺失 -> `422 {"detail":[{"type":"missing","loc":["body","spec","imageurl"],"msg":"Field required"}]}`。
+**效果**：按 `framework + framework_version` 幂等 upsert；该 framework 首次注册时自动置为默认版本。`runtime_spec` 为不透明 JSON 透传，注册中心不解析其内部字段。
+**错误**：`runtime_spec` 缺失 -> `422`（pydantic 校验错误）。
 
 **数据库验证**：
 ```bash
-# 1. image 表新增一行（registry='images'），data JSON 扁平含 imageurl/cpu
+# 1. image 表新增一行（registry='images'），data JSON 含 runtime_spec 透传
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework, framework_version, is_default,
-          json_extract(data,'$.imageurl') AS imageurl,
-          json_extract(data,'$.cpu') AS cpu
+          json_extract(data,'$.runtime_spec.rootfs.imageurl') AS imageurl,
+          json_extract(data,'$.runtime_spec.cpu') AS cpu
    FROM image WHERE registry='images' AND framework='opencode';"
 # 预期：opencode|v0.2.0|1|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000
 
@@ -97,19 +104,26 @@ curl 'http://127.0.0.1:8000/api/images?framework=opencode'
 ```json
 [{
   "framework": "opencode",
-  "default": "v0.2.0",
-  "versions": [{"framework_version": "v0.2.0", "image_module_version": "v1.3", ...}]
+  "framework_version": "v0.2.0",
+  "is_default": true,
+  "image_module_version": "v1.3",
+  "runtime_spec": {"runtime": "python3.11", "rootfs": {"imageurl": "..."}, "cpu": 1000, ...},
+  "workspace": "/app",
+  "mounts": [{"source": "/data/agent", "target": "/data"}],
+  "env_vars": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
+  "uploaded_by": "user-01",
+  "created_at": "2026-07-06T10:00:00Z"
 }]
 ```
 
-**效果**：按 framework 分组、内含多版本。不传 `?framework=` 返回全部。
+**效果**：扁平数组返回（一条目 = 一个框架版本），`runtime_spec` 为不透明透传。不传 `?framework=` 返回全部。支持 `?size` / `?page` 分页。
 
 **数据库验证**：
 ```bash
 # 对照 image 表中该 framework 全部版本行 + 默认版本指针
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework_version, is_default,
-          json_extract(data,'\$.image_module_version') AS mod_ver
+          json_extract(data,'$.image_module_version') AS mod_ver
    FROM image WHERE registry='images' AND framework='opencode'
    ORDER BY is_default DESC, framework_version;"
 # 预期首行：v0.2.0|1|v1.3（is_default=1 排在前）
@@ -130,39 +144,40 @@ curl 'http://127.0.0.1:8000/api/images/opencode/launch-spec?version=v0.2.0'
 **预期响应** `200`：
 ```json
 {
-    "framework": "opencode",
-    "framework_version": "v0.2.0",
-    "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
-    "workdir": "/app",
-    "mounts": [],
+  "framework": "opencode",
+  "framework_version": "v0.2.0",
+  "runtime_spec": {
+    "runtime": "python3.11",
+    "sandbox_type": "docker",
+    "rootfs": {
+      "imageurl": "harbor.local/adapted/opencode:v0.2.0-mod1.3",
+      "user": "agentos",
+      "ports": ["tcp:8080"]
+    },
     "cpu": 1000,
     "memory": 2048,
-    "ports": [
-        {
-            "port": 8080,
-            "protocol": "tcp"
-        }
-    ],
-    "env": {
-        "A2X_LLM_KEY": "${A2X_LLM_KEY}"
-    }
+    "ports": [{"port": 8080, "protocol": "tcp"}]
+  },
+  "env_vars": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
+  "workspace": "/app",
+  "mounts": [{"source": "/data/agent", "target": "/data"}],
+  "image_module_version": "v1.3"
 }
 ```
 
-**效果**：返回元戎 Docker 沙箱运行规格；不带 version 取默认版本。
-**错误**：framework 或版本不存在 → `404 {"detail":"..."}`。
+**效果**：返回元戎运行规格（`runtime_spec` 不透明透传 + `env_vars`/`workspace`/`mounts` 顶层字段）；不带 version 取默认版本。
+**错误**：framework 或版本不存在 -> `404 {"detail":"..."}`。
 
 **数据库验证**：
 ```bash
 # 默认版本路径：查 is_default=1 那一行的 data
 sqlite3 "$A2X_REGISTRY_DB" \
   "SELECT framework_version,
-          json_extract(data,'\$.rootfs.imageurl') AS imageurl,
-          json_extract(data,'\$.cpu') AS cpu,
-          json_extract(data,'\$.memory') AS memory
+          json_extract(data,'$.runtime_spec.rootfs.imageurl') AS imageurl,
+          json_extract(data,'$.runtime_spec.cpu') AS cpu
    FROM image
    WHERE registry='images' AND framework='opencode' AND is_default=1;"
-# 预期：v0.2.0|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000|2048
+# 预期：v0.2.0|harbor.local/adapted/opencode:v0.2.0-mod1.3|1000
 ```
 
 ### 1.4 设默认版本
@@ -182,7 +197,7 @@ curl -X PUT http://127.0.0.1:8000/api/images/opencode/default \
 ```
 
 **效果**：清该 framework 旧 `is_default`、置新版为 1。
-**错误**：framework 不存在 → `404`。
+**错误**：framework 不存在 -> `404`。
 
 **数据库验证**：
 ```bash
@@ -207,8 +222,8 @@ curl -X DELETE http://127.0.0.1:8000/api/images/opencode/v0.2.0
 {"framework": "opencode", "framework_version": "v0.2.0", "status": "deregistered"}
 ```
 
-**效果**：先校验无在用实例 → 删镜像仓文件 → 删条目（删的是默认版本则把最新版补为默认）。
-**错误**：仍有在用实例 → `409 {"code":"image_in_use","detail":"2 个实例仍在用","instances":[...]}`。
+**效果**：先校验无在用实例 -> 删镜像仓文件 -> 删条目（删的是默认版本则把最新版补为默认）。
+**错误**：仍有在用实例 -> `409 {"detail":"image opencode@v0.2.0 still has N in-use instance(s); cannot deregister"}`。
 
 **数据库验证**：
 ```bash
@@ -224,8 +239,6 @@ sqlite3 "$A2X_REGISTRY_DB" \
    WHERE registry='images' AND framework='opencode' AND is_default=1;"
 # 预期：1（如还有其他版本）或 0（如该 framework 已无任何版本）
 ```
-
----
 
 ## 2. 实例管理 `/api/instances`
 

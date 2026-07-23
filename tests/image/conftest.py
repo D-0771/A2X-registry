@@ -32,19 +32,46 @@ def image_svc(table_svc):
     set_image_service(None)
 
 
-def make_spec(
+def make_runtime_spec(
     imageurl: str = "harbor.local/adapted/opencode:v0.2.0",
     cpu: int = 1000,
     memory: int = 2048,
 ) -> dict:
-    """构造一个最小可用的元戎运行规格（V2 扁平，无 rootfs 包装）。"""
+    """构造一个不透明透传的 runtime_spec JSON 对象（元戎 RuntimeSpec 结构）。"""
     return {
-        "imageurl": imageurl,
-        "workdir": "/app",
-        "mounts": [{"source": "/data/agent", "target": "/data"}],
+        "runtime": "python3.11",
+        "sandbox_type": "docker",
+        "rootfs": {
+            "imageurl": imageurl,
+            "user": "agentos",
+            "ports": ["tcp:8080"],
+        },
         "cpu": cpu,
         "memory": memory,
         "ports": [{"port": 8080, "protocol": "tcp"}],
-        "env": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
-        "image_module_version": "v1.3",
+    }
+
+
+def make_register_body(
+    runtime_spec: dict | None = None,
+    env_vars: dict | None = None,
+    workspace: str = "/app",
+    mounts: list | None = None,
+    image_module_version: str = "v1.3",
+    uploaded_by: str = "user-01",
+) -> dict:
+    """构造 POST /api/images 请求体（v2.1 结构：runtime_spec 透传 + 顶层 env_vars/workspace/mounts）。"""
+    if runtime_spec is None:
+        runtime_spec = make_runtime_spec()
+    if env_vars is None:
+        env_vars = {"A2X_LLM_KEY": "${A2X_LLM_KEY}"}
+    if mounts is None:
+        mounts = [{"source": "/data/agent", "target": "/data"}]
+    return {
+        "runtime_spec": runtime_spec,
+        "env_vars": env_vars,
+        "workspace": workspace,
+        "mounts": mounts,
+        "image_module_version": image_module_version,
+        "uploaded_by": uploaded_by,
     }

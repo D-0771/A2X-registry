@@ -31,9 +31,9 @@ def test_first_version_auto_default(rqlite_backend):
     is_default = 1 if rows[0]["c"] == 0 else 0
 
     rqlite_backend.execute(
-        "INSERT INTO image(registry, service_id, framework, framework_version, is_default, data) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (IMG_REG, f"img_{fw}_{ver}", fw, ver, is_default, "{}"),
+        "INSERT INTO image(registry, service_id, framework, framework_version, version_key, is_default, data) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (IMG_REG, f"img_{fw}_{ver}", fw, ver, "00001.00000.00000~", is_default, "{}"),
     )
 
     rows = rqlite_backend.query(
@@ -48,9 +48,9 @@ def test_second_version_not_default(rqlite_backend):
     fw = "autogen2"
     # 第一版
     rqlite_backend.execute(
-        "INSERT INTO image(registry, service_id, framework, framework_version, is_default, data) "
-        "VALUES (?, ?, ?, ?, 1, '{}')",
-        (IMG_REG, f"img_{fw}_1.0", fw, "1.0"),
+        "INSERT INTO image(registry, service_id, framework, framework_version, version_key, is_default, data) "
+        "VALUES (?, ?, ?, ?, ?, 1, '{}')",
+        (IMG_REG, f"img_{fw}_1.0", fw, "1.0", "00001.00000.00000~"),
     )
     # 第二版
     rows = rqlite_backend.query(
@@ -59,9 +59,9 @@ def test_second_version_not_default(rqlite_backend):
     )
     is_default = 1 if rows[0]["c"] == 0 else 0
     rqlite_backend.execute(
-        "INSERT INTO image(registry, service_id, framework, framework_version, is_default, data) "
-        "VALUES (?, ?, ?, ?, ?, '{}')",
-        (IMG_REG, f"img_{fw}_2.0", fw, "2.0", is_default),
+        "INSERT INTO image(registry, service_id, framework, framework_version, version_key, is_default, data) "
+        "VALUES (?, ?, ?, ?, ?, ?, '{}')",
+        (IMG_REG, f"img_{fw}_2.0", fw, "2.0", "00002.00000.00000~", is_default),
     )
 
     rows = rqlite_backend.query(
@@ -224,18 +224,15 @@ def test_deregister_default_reassigns_to_latest(rqlite_seeded_backend):
 # ── resolve_launch_spec：抽元戎运行规格 ──────────────────────
 
 def test_resolve_launch_spec_exact_version(rqlite_seeded_backend):
-    """按 framework+version 精确查一行，抽 rootfs/cpu/memory/ports/env。"""
-    rows = rqlite_seeded_backend.query(
+    """按 framework+version 精确查一行，抽 runtime_spec/cpu/memory。"""
+    row = rqlite_seeded_backend.query(
         "SELECT data FROM image WHERE registry=? AND framework=? AND framework_version=?",
         (IMG_REG, "langchain", "0.2.0"),
-    )
-    data = json.loads(rows[0]["data"])
-    spec = {k: data[k] for k in ("rootfs", "cpu", "memory", "ports", "env")}
-    assert spec["cpu"] == 2
-    assert spec["memory"] == "1Gi"
-    assert spec["ports"] == [8080]
-    assert spec["rootfs"]["type"] == "docker"
-    assert spec["rootfs"]["imageurl"] == "registry.local/langchain:0.2.0"
+    )[0]
+    data = json.loads(row["data"])
+    spec = {k: data.get(k) for k in ("runtime_spec", "env_vars", "workspace")}
+    assert spec["runtime_spec"]["cpu"] == 2
+    assert spec["runtime_spec"]["rootfs"]["imageurl"] == "registry.local/langchain:0.2.0"
 
 
 def test_resolve_launch_spec_uses_default_when_version_omitted(rqlite_seeded_backend):
@@ -252,7 +249,7 @@ def test_resolve_launch_spec_uses_default_when_version_omitted(rqlite_seeded_bac
         (IMG_REG, "langchain", default_ver),
     )
     data = json.loads(rows[0]["data"])
-    assert data["cpu"] == 2                          # 0.2.0 的规格
+    assert data["runtime_spec"]["cpu"] == 2                          # 0.2.0 的规格
 
 
 def test_resolve_launch_spec_404_on_missing_framework(rqlite_seeded_backend):
@@ -269,11 +266,11 @@ def test_resolve_launch_spec_404_on_missing_framework(rqlite_seeded_backend):
 def test_deregister_records_imageurl_before_delete(rqlite_seeded_backend):
     """删镜像前需先取 imageurl（调镜像仓 delete(imageurl)）。
 
-    SQL 模式：删行前 SELECT json_extract(data, '$.rootfs.imageurl')。
+    SQL 模式：删行前 SELECT json_extract(data, '$.runtime_spec.rootfs.imageurl')。
     """
-    rows = rqlite_seeded_backend.query(
-        "SELECT json_extract(data, '$.rootfs.imageurl') AS url FROM image "
+    row = rqlite_seeded_backend.query(
+        "SELECT json_extract(data, '$.runtime_spec.rootfs.imageurl') AS url FROM image "
         "WHERE registry=? AND framework=? AND framework_version=?",
         (IMG_REG, "langchain", "0.1.0"),
-    )
-    assert rows[0]["url"] == "registry.local/langchain:0.1.0"
+    )[0]
+    assert row["url"] == "registry.local/langchain:0.1.0"

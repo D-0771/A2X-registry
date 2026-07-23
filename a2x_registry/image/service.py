@@ -34,11 +34,6 @@ logger = logging.getLogger(__name__)
 IMAGE_REGISTRY = "images"
 INSTANCE_REGISTRY = "instances"
 
-# Flat launch-spec fields extracted from the data JSON.
-_LAUNCH_SPEC_FIELDS = (
-    "imageurl", "workdir", "mounts", "cpu", "memory", "ports", "env",
-)
-
 # Image repo deletion env var.
 _ENV_REPO_BASE = "A2X_REGISTRY_REPO_BASE"
 
@@ -65,14 +60,18 @@ class ImageService:
         self,
         framework: str,
         framework_version: str,
-        spec: Dict[str, Any],
+        runtime_spec: Dict[str, Any],
+        env_vars: Dict[str, str],
+        workspace: Optional[str],
+        mounts: List[Dict[str, Any]],
+        image_module_version: Optional[str],
         uploaded_by: str,
     ) -> Dict[str, Any]:
         """Insert one row (framework+version, idempotent upsert).
 
-        Stores flat ``data`` JSON ``{imageurl, workdir, mounts, cpu,
-        memory, ports, env, image_module_version, created_at}``.
-        ``uploaded_by`` and ``version_key`` are promoted columns.
+        V2.1: ``runtime_spec`` is stored as opaque JSON passthrough.
+        ``data`` JSON = ``{runtime_spec, env_vars, workspace, mounts,
+        image_module_version, created_at}``.
         """
         if not framework or not framework_version:
             raise ImageValidationError(
@@ -98,14 +97,11 @@ class ImageService:
         vk = version_key(framework_version)
 
         data = {
-            "imageurl": spec.get("imageurl", ""),
-            "workdir": spec.get("workdir"),
-            "mounts": spec.get("mounts", []),
-            "cpu": spec.get("cpu", 0),
-            "memory": spec.get("memory", 0),
-            "ports": spec.get("ports", []),
-            "env": spec.get("env", {}),
-            "image_module_version": spec.get("image_module_version"),
+            "runtime_spec": runtime_spec,
+            "env_vars": env_vars,
+            "workspace": workspace,
+            "mounts": mounts,
+            "image_module_version": image_module_version,
             "created_at": created_at,
         }
 
@@ -255,8 +251,7 @@ class ImageService:
     def resolve_launch_spec(
         self, framework: str, version: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Assemble flat launch spec ``{framework, framework_version, imageurl,
-        workdir, mounts, cpu, memory, ports, env}``."""
+        """Assemble launch spec with runtime_spec passthrough."""
         ver = version or self.get_default_version(framework)
         rows = self._table_svc.query(
             IMAGE_REGISTRY,
@@ -265,16 +260,15 @@ class ImageService:
         if not rows:
             raise ImageNotFoundError(f"image {framework}@{ver} not found")
         data = rows[0].get("data", {}) or {}
-        spec: Dict[str, Any] = {
+        return {
             "framework": framework,
             "framework_version": ver,
+            "runtime_spec": data.get("runtime_spec"),
+            "env_vars": data.get("env_vars", {}),
+            "workspace": data.get("workspace"),
+            "mounts": data.get("mounts", []),
+            "image_module_version": data.get("image_module_version"),
         }
-        for k in _LAUNCH_SPEC_FIELDS:
-            if k in data:
-                spec[k] = data[k]
-        if "imageurl" not in spec:
-            spec["imageurl"] = ""
-        return spec
 
     # ------------------------------------------------------------------
     # internal helpers
@@ -315,20 +309,17 @@ class ImageService:
 
     @staticmethod
     def _row_to_entry(row: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert a DB row (merged entry dict) into a flat image entry."""
+        """Convert a DB row (merged entry dict) into a V2.1 image entry."""
         data = row.get("data", {}) or {}
         return {
             "framework": row["framework"],
             "framework_version": row["framework_version"],
             "is_default": bool(row.get("is_default")),
             "image_module_version": data.get("image_module_version"),
-            "imageurl": data.get("imageurl", ""),
-            "workdir": data.get("workdir"),
+            "runtime_spec": data.get("runtime_spec"),
+            "workspace": data.get("workspace"),
             "mounts": data.get("mounts", []),
-            "cpu": data.get("cpu", 0),
-            "memory": data.get("memory", 0),
-            "ports": data.get("ports", []),
-            "env": data.get("env", {}),
+            "env_vars": data.get("env_vars", {}),
             "uploaded_by": row.get("uploaded_by"),
             "created_at": data.get("created_at"),
         }
